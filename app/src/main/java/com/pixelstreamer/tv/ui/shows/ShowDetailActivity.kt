@@ -43,6 +43,7 @@ class ShowDetailActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         seriesKey = intent.getStringExtra(EXTRA_SERIES_KEY).orEmpty()
+        binding.btnShowBack.setOnClickListener { finish() }
         binding.seasonsRecycler.layoutManager =
             LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false)
         binding.episodesRecycler.layoutManager = LinearLayoutManager(this)

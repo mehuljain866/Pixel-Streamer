@@ -4,8 +4,10 @@ import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.GestureDetector
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.widget.LinearLayout
 import android.widget.SeekBar
@@ -221,6 +223,57 @@ class PlayerActivity : AppCompatActivity() {
 
         binding.btnPauseBack.setOnClickListener {
             finish()
+        }
+
+        val playerGestureDetector = GestureDetector(
+            this,
+            object : GestureDetector.SimpleOnGestureListener() {
+                override fun onDown(e: MotionEvent): Boolean = true
+
+                override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                    if (binding.settingsPopupOverlay.visibility == View.VISIBLE) {
+                        closeSettingsPopup()
+                        return true
+                    }
+                    val exo = player ?: return true
+                    val controlsVisible = binding.controlsOverlay.visibility == View.VISIBLE
+                    if (exo.isPlaying) {
+                        if (controlsVisible) hideAllOverlays()
+                        else showTimelineHudOnly(focusTimeline = false)
+                    } else {
+                        exo.play()
+                        hideAllOverlays()
+                    }
+                    return true
+                }
+
+                override fun onDoubleTap(e: MotionEvent): Boolean {
+                    val exo = player ?: return true
+                    val w = binding.playerView.width.coerceAtLeast(1)
+                    when {
+                        e.x < w * 0.35f -> {
+                            performImmediateSeekDelta(-10_000L)
+                            showTimelineHudOnly(focusTimeline = false)
+                        }
+                        e.x > w * 0.65f -> {
+                            performImmediateSeekDelta(10_000L)
+                            showTimelineHudOnly(focusTimeline = false)
+                        }
+                        else -> {
+                            if (exo.isPlaying) exo.pause()
+                            else {
+                                exo.play()
+                                hideAllOverlays()
+                            }
+                        }
+                    }
+                    return true
+                }
+            }
+        )
+        binding.playerView.setOnTouchListener { _, event ->
+            playerGestureDetector.onTouchEvent(event)
+            true
         }
 
         binding.pauseSeekBar.setOnKeyListener { _, keyCode, event ->

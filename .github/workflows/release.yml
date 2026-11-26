@@ -1,4 +1,4 @@
-name: Build and Release Android TV APK
+name: Build and Release TV and Tablet APKs
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
       tag:
         description: 'Release tag name (e.g. v1.0.1)'
         required: true
-        default: 'v1.0.0'
+        default: 'v1.0.1'
 
 permissions:
   contents: write
@@ -52,12 +52,12 @@ jobs:
               -dname "CN=Pixel Streamer, OU=TV, O=PixelStreamer, L=Internet, S=NA, C=US"
           fi
 
-      - name: Run unit tests and build release APK
+      - name: Run unit tests and build TV + Tablet release APKs
         run: |
           chmod +x gradlew
-          ./gradlew testDebugUnitTest assembleRelease --no-daemon
+          ./gradlew testTvDebugUnitTest testTabletDebugUnitTest assembleTvRelease assembleTabletRelease --no-daemon
 
-      - name: Package and verify signed APK
+      - name: Package and verify signed APKs
         id: pkg
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
@@ -65,34 +65,39 @@ jobs:
           else
             TAG="${{ github.ref_name }}"
           fi
-          APK_NAME="PixelStreamer-tv-${TAG}.apk"
+          TV_APK="release-assets/PixelStreamer-tv-${TAG}.apk"
+          TAB_APK="release-assets/PixelStreamer-tablet-${TAG}.apk"
           mkdir -p release-assets
-          cp app/build/outputs/apk/release/app-release.apk "release-assets/${APK_NAME}"
+          cp app/build/outputs/apk/tv/release/app-tv-release.apk "$TV_APK"
+          cp app/build/outputs/apk/tablet/release/app-tablet-release.apk "$TAB_APK"
 
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -n1)"
           if [ -n "$APKSIGNER" ]; then
-            "$APKSIGNER" verify "release-assets/${APK_NAME}"
+            "$APKSIGNER" verify "$TV_APK"
+            "$APKSIGNER" verify "$TAB_APK"
           fi
 
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "apk_path=release-assets/${APK_NAME}" >> "$GITHUB_OUTPUT"
+          echo "tv_apk=${TV_APK}" >> "$GITHUB_OUTPUT"
+          echo "tablet_apk=${TAB_APK}" >> "$GITHUB_OUTPUT"
 
-      - name: Upload build artifact
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: PixelStreamer-APK-${{ steps.pkg.outputs.tag }}
-          path: ${{ steps.pkg.outputs.apk_path }}
+          name: PixelStreamer-APKs-${{ steps.pkg.outputs.tag }}
+          path: release-assets/*.apk
 
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ steps.pkg.outputs.tag }}"
-          APK="${{ steps.pkg.outputs.apk_path }}"
+          TV_APK="${{ steps.pkg.outputs.tv_apk }}"
+          TAB_APK="${{ steps.pkg.outputs.tablet_apk }}"
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$APK" --clobber
+            gh release upload "$TAG" "$TV_APK" "$TAB_APK" --clobber
           else
-            gh release create "$TAG" "$APK" \
+            gh release create "$TAG" "$TV_APK" "$TAB_APK" \
               --title "Pixel Streamer ${TAG}" \
               --generate-notes
           fi

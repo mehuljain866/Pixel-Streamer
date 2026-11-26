@@ -30,6 +30,28 @@
         android:paddingEnd="42dp"
         android:paddingBottom="22dp">
 
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingBottom="8dp">
+
+            <Button
+                android:id="@+id/btnShowBack"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:background="@drawable/bg_pill_glass"
+                android:focusable="true"
+                android:paddingStart="14dp"
+                android:paddingEnd="14dp"
+                android:text="←  Back"
+                android:textAllCaps="false"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
         <!-- Top Show Hero Header -->
         <LinearLayout
             android:layout_width="match_parent"

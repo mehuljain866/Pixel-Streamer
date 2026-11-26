@@ -23,11 +23,12 @@
 
     <TextView
         android:id="@+id/heroTitle"
-        android:layout_width="560dp"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:ellipsize="end"
         android:fontFamily="@font/pixel_bold"
         android:maxLines="2"
+        android:maxWidth="560dp"
         android:text="Your Personal Cinema"
         android:textColor="#FFFFFF"
         android:textSize="28sp" />
@@ -44,12 +45,13 @@
 
     <TextView
         android:id="@+id/heroOverview"
-        android:layout_width="500dp"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="5dp"
         android:ellipsize="end"
         android:lineSpacingMultiplier="1.15"
         android:maxLines="2"
+        android:maxWidth="500dp"
         android:text="Share any Google Photos album containing movies, shows, or photos to stream in sleek cinema mode."
         android:textColor="#B0B0B8"
         android:textSize="13sp" />

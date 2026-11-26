@@ -365,6 +365,18 @@ class HomeActivity : AppCompatActivity() {
         }
     }
 
+    private fun posterGridSpanCount(): Int {
+        val dm = resources.displayMetrics
+        val dpW = dm.widthPixels / dm.density
+        return (dpW / 145f).toInt().coerceIn(3, 7)
+    }
+
+    private fun landscapeGridSpanCount(): Int {
+        val dm = resources.displayMetrics
+        val dpW = dm.widthPixels / dm.density
+        return (dpW / 225f).toInt().coerceIn(2, 5)
+    }
+
     private fun refreshGridTab() {
         val progress = repo.progressMap.value
         binding.btnGridSlideshow.visibility = if (currentTab == "PHOTOS") View.VISIBLE else View.GONE
@@ -379,7 +391,7 @@ class HomeActivity : AppCompatActivity() {
                 binding.gridCount.text = "${sorted.size} title${if (sorted.size == 1) "" else "s"}"
                 binding.gridEmptyMessage.text = "No movies yet. Share a Google Photos album with movies via Settings (⚙)."
                 binding.gridEmptyMessage.visibility = if (sorted.isEmpty()) View.VISIBLE else View.GONE
-                binding.gridRecycler.layoutManager = GridLayoutManager(this, 6)
+                binding.gridRecycler.layoutManager = GridLayoutManager(this, posterGridSpanCount())
                 binding.gridRecycler.adapter = CardAdapter(
                     style = RowStyle.MOVIES_POSTER,
                     items = sorted,
@@ -395,7 +407,7 @@ class HomeActivity : AppCompatActivity() {
                 binding.gridEmptyMessage.text =
                     "No TV shows detected yet. Episodes with S01E01 / 1x01 or albums marked 'Shows' appear here chronologically."
                 binding.gridEmptyMessage.visibility = if (sorted.isEmpty()) View.VISIBLE else View.GONE
-                binding.gridRecycler.layoutManager = GridLayoutManager(this, 6)
+                binding.gridRecycler.layoutManager = GridLayoutManager(this, posterGridSpanCount())
                 binding.gridRecycler.adapter = CardAdapter(
                     style = RowStyle.SHOWS_POSTER,
                     shows = sorted,
@@ -409,7 +421,7 @@ class HomeActivity : AppCompatActivity() {
                 binding.gridCount.text = "${photos.size} photo${if (photos.size == 1) "" else "s"}"
                 binding.gridEmptyMessage.text = "No photos yet. Share a photo album in Settings (⚙)."
                 binding.gridEmptyMessage.visibility = if (photos.isEmpty()) View.VISIBLE else View.GONE
-                binding.gridRecycler.layoutManager = GridLayoutManager(this, 4)
+                binding.gridRecycler.layoutManager = GridLayoutManager(this, landscapeGridSpanCount())
                 binding.gridRecycler.adapter = CardAdapter(
                     style = RowStyle.PHOTOS_LANDSCAPE,
                     items = photos,
@@ -537,7 +549,7 @@ class HomeActivity : AppCompatActivity() {
     }
 
     private fun setupSearchOverlay() {
-        binding.searchResultsRecycler.layoutManager = GridLayoutManager(this, 6)
+        binding.searchResultsRecycler.layoutManager = GridLayoutManager(this, posterGridSpanCount())
         binding.searchResultsRecycler.itemAnimator = null
 
         binding.btnCloseSearch.setOnClickListener { hideSearchOverlay() }

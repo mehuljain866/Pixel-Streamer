@@ -27,9 +27,9 @@
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:paddingStart="48dp"
-        android:paddingTop="32dp"
+        android:paddingTop="58dp"
         android:paddingEnd="48dp"
-        android:paddingBottom="32dp">
+        android:paddingBottom="24dp">
 
         <ImageView
             android:id="@+id/detailPoster"
@@ -40,12 +40,17 @@
             android:foreground="@drawable/bg_card_focus_frame"
             android:scaleType="centerCrop" />
 
-        <LinearLayout
+        <ScrollView
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_marginStart="36dp"
             android:layout_weight="1"
-            android:orientation="vertical">
+            android:scrollbars="none">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
 
             <TextView
                 android:id="@+id/detailTag"
@@ -212,6 +217,24 @@
                         android:textSize="12sp" />
                 </LinearLayout>
             </LinearLayout>
-        </LinearLayout>
+            </LinearLayout>
+        </ScrollView>
     </LinearLayout>
+
+    <Button
+        android:id="@+id/btnDetailBack"
+        android:layout_width="wrap_content"
+        android:layout_height="36dp"
+        android:layout_gravity="top|start"
+        android:layout_marginStart="38dp"
+        android:layout_marginTop="16dp"
+        android:background="@drawable/bg_pill_glass"
+        android:focusable="true"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:text="←  Back"
+        android:textAllCaps="false"
+        android:textColor="#FFFFFF"
+        android:textSize="12sp"
+        android:textStyle="bold" />
 </FrameLayout>

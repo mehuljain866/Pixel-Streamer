@@ -9,8 +9,26 @@
         android:id="@+id/photoFullImage"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
+        android:clickable="true"
         android:contentDescription="@null"
         android:scaleType="fitCenter" />
+
+    <Button
+        android:id="@+id/btnPhotoBack"
+        android:layout_width="wrap_content"
+        android:layout_height="38dp"
+        android:layout_gravity="top|start"
+        android:layout_marginStart="28dp"
+        android:layout_marginTop="20dp"
+        android:background="@drawable/bg_pill_glass"
+        android:focusable="true"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:text="←  Back"
+        android:textAllCaps="false"
+        android:textColor="#FFFFFF"
+        android:textSize="13sp"
+        android:textStyle="bold" />
 
     <LinearLayout
         android:id="@+id/photoOverlayBar"
@@ -20,10 +38,10 @@
         android:background="@drawable/bg_hero_gradient_vertical"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:paddingStart="44dp"
+        android:paddingStart="36dp"
         android:paddingTop="32dp"
-        android:paddingEnd="44dp"
-        android:paddingBottom="26dp">
+        android:paddingEnd="36dp"
+        android:paddingBottom="24dp">
 
         <LinearLayout
             android:layout_width="0dp"
@@ -47,6 +65,30 @@
                 android:textColor="@color/nf_text_secondary"
                 android:textSize="13sp" />
         </LinearLayout>
+
+        <Button
+            android:id="@+id/btnPhotoPrev"
+            android:layout_width="42dp"
+            android:layout_height="42dp"
+            android:layout_marginEnd="8dp"
+            android:background="@drawable/bg_pill_glass"
+            android:focusable="true"
+            android:text="‹"
+            android:textColor="#FFFFFF"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnPhotoNext"
+            android:layout_width="42dp"
+            android:layout_height="42dp"
+            android:layout_marginEnd="10dp"
+            android:background="@drawable/bg_pill_glass"
+            android:focusable="true"
+            android:text="›"
+            android:textColor="#FFFFFF"
+            android:textSize="18sp"
+            android:textStyle="bold" />
 
         <Button
             android:id="@+id/btnPhotoSlideshow"

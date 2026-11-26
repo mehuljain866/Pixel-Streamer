@@ -15,8 +15,9 @@ PORT = 8088
 ROOT = Path(__file__).resolve().parent
 DIST_APKS = sorted((ROOT / "dist").glob("*.apk"), key=lambda p: p.stat().st_mtime, reverse=True) if (ROOT / "dist").exists() else []
 APK_CANDIDATES = DIST_APKS + [
+    ROOT / "app" / "build" / "outputs" / "apk" / "tv" / "release" / "app-tv-release.apk",
+    ROOT / "app" / "build" / "outputs" / "apk" / "tablet" / "release" / "app-tablet-release.apk",
     ROOT / "app" / "build" / "outputs" / "apk" / "release" / "app-release.apk",
-    ROOT / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk",
 ]
 
 

@@ -3,10 +3,14 @@ package com.pixelstreamer.tv.ui.photos
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.GestureDetector
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import androidx.appcompat.app.AppCompatActivity
+import com.pixelstreamer.tv.BuildConfig
 import com.pixelstreamer.tv.PixelStreamerApp
+import kotlin.math.abs
 import com.pixelstreamer.tv.data.model.MediaItem
 import com.pixelstreamer.tv.databinding.ActivityPhotoViewerBinding
 import com.pixelstreamer.tv.util.loadUrlWithFallback
@@ -55,6 +59,59 @@ class PhotoViewerActivity : AppCompatActivity() {
         binding.btnPhotoSlideshow.setOnClickListener {
             toggleSlideshow()
         }
+        binding.btnPhotoBack.setOnClickListener {
+            finish()
+        }
+        binding.btnPhotoPrev.setOnClickListener {
+            if (photos.isNotEmpty()) showPhoto((currentIndex - 1 + photos.size) % photos.size)
+        }
+        binding.btnPhotoNext.setOnClickListener {
+            if (photos.isNotEmpty()) showPhoto((currentIndex + 1) % photos.size)
+        }
+
+        val photoGestureDetector = GestureDetector(
+            this,
+            object : GestureDetector.SimpleOnGestureListener() {
+                override fun onDown(e: MotionEvent): Boolean = true
+
+                override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                    togglePhotoOverlay()
+                    return true
+                }
+
+                override fun onFling(
+                    e1: MotionEvent?,
+                    e2: MotionEvent,
+                    velocityX: Float,
+                    velocityY: Float
+                ): Boolean {
+                    if (e1 == null || photos.isEmpty()) return false
+                    val dx = e2.x - e1.x
+                    val dy = e2.y - e1.y
+                    if (abs(dx) > abs(dy) && abs(dx) > 80f) {
+                        val nextIdx = if (dx < 0) {
+                            (currentIndex + 1) % photos.size
+                        } else {
+                            (currentIndex - 1 + photos.size) % photos.size
+                        }
+                        showPhoto(nextIdx)
+                        return true
+                    }
+                    return false
+                }
+            }
+        )
+        binding.photoFullImage.setOnTouchListener { _, event ->
+            photoGestureDetector.onTouchEvent(event)
+            true
+        }
+    }
+
+    private fun togglePhotoOverlay() {
+        overlayVisible = !overlayVisible
+        val vis = if (overlayVisible) View.VISIBLE else View.GONE
+        binding.photoOverlayBar.visibility = vis
+        binding.btnPhotoBack.visibility = vis
     }
 
     override fun onDestroy() {
@@ -78,7 +135,10 @@ class PhotoViewerActivity : AppCompatActivity() {
         binding.photoCounter.text = buildString {
             append("${idx + 1} / ${photos.size}")
             if (dateStr.isNotBlank()) append("   •   $dateStr")
-            append("   •   ◀ ▶ Navigate   •   OK Slideshow")
+            append(
+                if (BuildConfig.IS_TABLET) "   •   Swipe or tap ‹ ›"
+                else "   •   ◀ ▶ Navigate   •   OK Slideshow"
+            )
         }
     }
 
@@ -114,8 +174,7 @@ class PhotoViewerActivity : AppCompatActivity() {
             }
             KeyEvent.KEYCODE_DPAD_UP,
             KeyEvent.KEYCODE_DPAD_DOWN -> {
-                overlayVisible = !overlayVisible
-                binding.photoOverlayBar.visibility = if (overlayVisible) View.VISIBLE else View.GONE
+                togglePhotoOverlay()
                 return true
             }
         }

@@ -58,6 +58,8 @@ class DetailActivity : AppCompatActivity() {
     }
 
     private fun setupButtons() {
+        binding.btnDetailBack.setOnClickListener { finish() }
+
         binding.btnDetailPlay.setOnClickListener {
             val prog = repo.progressMap.value[itemId]
             val startMs = if (prog != null && prog.isInProgress) prog.positionMs else 0L

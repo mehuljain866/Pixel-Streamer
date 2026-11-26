@@ -55,80 +55,86 @@
         android:layout_weight="1"
         android:orientation="horizontal">
 
-        <!-- Left Pane: QR Companion & Actions -->
-        <LinearLayout
+        <!-- Left Pane: QR Companion & Actions (Scrollable for Tablet screens) -->
+        <ScrollView
             android:layout_width="320dp"
             android:layout_height="match_parent"
             android:background="@drawable/bg_panel_card"
-            android:gravity="center_horizontal"
-            android:orientation="vertical"
-            android:padding="18dp">
+            android:scrollbars="none">
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Scan with Phone Camera"
-                android:textColor="@color/nf_text_primary"
-                android:textSize="15sp"
-                android:textStyle="bold" />
-
-            <ImageView
-                android:id="@+id/albumsQrImage"
-                android:layout_width="170dp"
-                android:layout_height="170dp"
-                android:layout_marginTop="10dp"
-                android:background="#FFFFFF"
-                android:contentDescription="Companion Web UI QR Code"
-                android:padding="6dp" />
-
-            <TextView
-                android:id="@+id/albumsServerUrl"
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:gravity="center"
-                android:text="Connect Wi-Fi to paste links from phone"
-                android:textColor="@color/nf_badge_green"
-                android:textSize="12sp"
-                android:textStyle="bold" />
+                android:gravity="center_horizontal"
+                android:orientation="vertical"
+                android:padding="18dp">
 
-            <Button
-                android:id="@+id/btnAddAlbumDirect"
-                android:layout_width="match_parent"
-                android:layout_height="44dp"
-                android:layout_marginTop="14dp"
-                android:background="@drawable/bg_btn_primary"
-                android:focusable="true"
-                android:text="+ Paste Link on TV"
-                android:textAllCaps="false"
-                android:textColor="@color/nf_text_primary"
-                android:textSize="14sp"
-                android:textStyle="bold" />
+                <Button
+                    android:id="@+id/btnAddAlbumDirect"
+                    android:layout_width="match_parent"
+                    android:layout_height="44dp"
+                    android:background="@drawable/bg_btn_primary"
+                    android:focusable="true"
+                    android:text="+ Add Shared Album Link"
+                    android:textAllCaps="false"
+                    android:textColor="@color/nf_text_primary"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
 
-            <Button
-                android:id="@+id/btnSyncAll"
-                android:layout_width="match_parent"
-                android:layout_height="42dp"
-                android:layout_marginTop="10dp"
-                android:background="@drawable/bg_btn_secondary"
-                android:focusable="true"
-                android:text="↻  Sync All Enabled Albums"
-                android:textAllCaps="false"
-                android:textColor="@color/nf_text_primary"
-                android:textSize="13sp" />
+                <Button
+                    android:id="@+id/btnSyncAll"
+                    android:layout_width="match_parent"
+                    android:layout_height="42dp"
+                    android:layout_marginTop="10dp"
+                    android:background="@drawable/bg_btn_secondary"
+                    android:focusable="true"
+                    android:text="↻  Sync All Enabled Albums"
+                    android:textAllCaps="false"
+                    android:textColor="@color/nf_text_primary"
+                    android:textSize="13sp" />
 
-            <Button
-                android:id="@+id/btnTmdbSettings"
-                android:layout_width="match_parent"
-                android:layout_height="42dp"
-                android:layout_marginTop="10dp"
-                android:background="@drawable/bg_btn_secondary"
-                android:focusable="true"
-                android:text="⚙  TMDB Key &amp; Quality"
-                android:textAllCaps="false"
-                android:textColor="@color/nf_text_primary"
-                android:textSize="13sp" />
-        </LinearLayout>
+                <Button
+                    android:id="@+id/btnTmdbSettings"
+                    android:layout_width="match_parent"
+                    android:layout_height="42dp"
+                    android:layout_marginTop="10dp"
+                    android:background="@drawable/bg_btn_secondary"
+                    android:focusable="true"
+                    android:text="⚙  TMDB Key &amp; Quality"
+                    android:textAllCaps="false"
+                    android:textColor="@color/nf_text_primary"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp"
+                    android:text="Or Scan with Phone Camera"
+                    android:textColor="@color/nf_text_secondary"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <ImageView
+                    android:id="@+id/albumsQrImage"
+                    android:layout_width="156dp"
+                    android:layout_height="156dp"
+                    android:layout_marginTop="8dp"
+                    android:background="#FFFFFF"
+                    android:contentDescription="Companion Web UI QR Code"
+                    android:padding="6dp" />
+
+                <TextView
+                    android:id="@+id/albumsServerUrl"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:gravity="center"
+                    android:text="Connect Wi-Fi to paste links from phone"
+                    android:textColor="@color/nf_badge_green"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+        </ScrollView>
 
         <!-- Right Pane: Saved Albums List -->
         <LinearLayout

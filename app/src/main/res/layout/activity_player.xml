@@ -268,12 +268,14 @@
         android:visibility="gone">
 
         <LinearLayout
+            android:id="@+id/settingsPopupCard"
             android:layout_width="340dp"
             android:layout_height="wrap_content"
             android:layout_gravity="bottom|end"
             android:layout_marginEnd="48dp"
             android:layout_marginBottom="78dp"
             android:background="@drawable/bg_popup_card"
+            android:clickable="true"
             android:orientation="vertical"
             android:padding="18dp">
 

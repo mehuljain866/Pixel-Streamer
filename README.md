@@ -1,6 +1,6 @@
 # Pixel Streamer
 
-Android TV player (`com.pixelstreamer.tv`, ~2.1 MB release APK, `minSdk 21`, `targetSdk 35`) for streaming movies, TV shows, and photos from public or shared Google Photos album links without signing into a Google account.
+Android TV (`com.pixelstreamer.tv`) and Android Tablet (`com.pixelstreamer.tablet`) app (`minSdk 21`, `targetSdk 35`) for streaming movies, TV shows, and photos from public or shared Google Photos album links without signing into a Google account.
 
 ## How it works
 
@@ -25,6 +25,7 @@ Built on AndroidX Media3 (`ExoPlayer` + `OkHttpDataSource`):
 - `Left` / `Right`: Scrub forward or back (`10s` per tap, accelerating to `30s` and `60s` while held).
 - `Center` / `Play/Pause`: Toggle playback from either full screen or the timeline bar. Pausing displays the title logo and synopsis.
 - `Settings` gear (or `Menu`): Open quality, playback speed (`0.75x` to `2x`), and screen fit (`Fit` / `Fill`) options. Quality choices are filtered to each video's resolution (`720p` files omit `1080p`).
+- Touch gestures (Tablet): Single-tap the video to toggle the timeline bar or resume playback, double-tap left or right to jump `10s`, swipe horizontally in Photo Viewer to change photos, and use the top-left Back buttons.
 
 When quality is set to `Auto`, the player probes the `=dv` original stream for HTTP `206` range-seek support first so source `1080p` and `720p` uploads play directly, falling back to signed `video-downloads.googleusercontent.com` URLs or `=m37`/`=m22`/`=m18` variants when needed.
 
@@ -54,7 +55,7 @@ Requires JDK 17 and Android SDK Platform 35 (`build-tools 35.0.0`). Set `sdk.dir
 ```powershell
 $env:JAVA_HOME = "$env:LOCALAPPDATA\Android\jdk-17"
 $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
-.\gradlew.bat testDebugUnitTest assembleRelease
+.\gradlew.bat testTvDebugUnitTest testTabletDebugUnitTest assembleTvRelease assembleTabletRelease
 ```
 
-The signed release APK is written to `app\build\outputs\apk\release\app-release.apk`. Copy it to `dist\PixelStreamer-tv-v1.0.0.apk` if serving via `serve_apk.py`.
+Signed release APKs are written to `app\build\outputs\apk\tv\release\app-tv-release.apk` and `app\build\outputs\apk\tablet\release\app-tablet-release.apk`. Separate TV and Tablet APKs are also attached automatically on the GitHub Releases page.
