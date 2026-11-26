@@ -26,6 +26,7 @@ data class HeroUiState(
 )
 
 class RowAdapter(
+    private val onHeroFocused: () -> Unit,
     private val onHeroPlayClicked: () -> Unit,
     private val onHeroDetailsClicked: () -> Unit,
     private val onItemFocused: (MediaItem) -> Unit,
@@ -54,6 +55,7 @@ class RowAdapter(
 
     class HeroVH(
         view: View,
+        onFocused: () -> Unit,
         onPlay: () -> Unit,
         onDetails: () -> Unit
     ) : RecyclerView.ViewHolder(view) {
@@ -68,6 +70,11 @@ class RowAdapter(
         init {
             btnPlay.setOnClickListener { onPlay() }
             btnDetails.setOnClickListener { onDetails() }
+            val focusListener = View.OnFocusChangeListener { _, hasFocus ->
+                if (hasFocus) onFocused()
+            }
+            btnPlay.onFocusChangeListener = focusListener
+            btnDetails.onFocusChangeListener = focusListener
         }
 
         fun bind(state: HeroUiState) {
@@ -104,7 +111,7 @@ class RowAdapter(
         val inflater = LayoutInflater.from(parent.context)
         return if (viewType == VIEW_TYPE_HERO) {
             val view = inflater.inflate(R.layout.item_home_hero, parent, false)
-            HeroVH(view, onHeroPlayClicked, onHeroDetailsClicked)
+            HeroVH(view, onHeroFocused, onHeroPlayClicked, onHeroDetailsClicked)
         } else {
             val view = inflater.inflate(R.layout.row_home, parent, false)
             val vh = RowVH(view)

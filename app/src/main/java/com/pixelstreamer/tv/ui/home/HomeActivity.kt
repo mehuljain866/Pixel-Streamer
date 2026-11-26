@@ -100,6 +100,7 @@ class HomeActivity : AppCompatActivity() {
 
     private fun setupRecycler() {
         rowAdapter = RowAdapter(
+            onHeroFocused = { scrollHomeToTop() },
             onHeroPlayClicked = { handleHeroPlayClick() },
             onHeroDetailsClicked = { handleHeroDetailsClick() },
             onItemFocused = { item -> updateHeroForItem(item) },
@@ -139,8 +140,17 @@ class HomeActivity : AppCompatActivity() {
         for ((tv, tabName) in tabViews) {
             tv.setOnFocusChangeListener { _, hasFocus ->
                 updateTabTextColor(tv, hasFocus || currentTab == tabName)
+                if (hasFocus && currentTab == "HOME") {
+                    scrollHomeToTop()
+                }
             }
         }
+        val iconFocusScroll = View.OnFocusChangeListener { _, hasFocus ->
+            if (hasFocus && currentTab == "HOME") scrollHomeToTop()
+        }
+        binding.navSearch.onFocusChangeListener = iconFocusScroll
+        binding.navRefresh.onFocusChangeListener = iconFocusScroll
+        binding.navAlbums.onFocusChangeListener = iconFocusScroll
 
         binding.filterAll.setOnClickListener {
             sortAZ = false
@@ -169,6 +179,12 @@ class HomeActivity : AppCompatActivity() {
         }
 
         updateTabSelection()
+    }
+
+    private fun scrollHomeToTop() {
+        binding.rowsRecycler.post {
+            (binding.rowsRecycler.layoutManager as? LinearLayoutManager)?.scrollToPositionWithOffset(0, 0)
+        }
     }
 
     private fun handleHeroPlayClick() {
