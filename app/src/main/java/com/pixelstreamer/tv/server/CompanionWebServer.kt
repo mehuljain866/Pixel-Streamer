@@ -19,13 +19,19 @@ import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+import java.security.SecureRandom
 
 /**
  * Lightweight embedded LAN HTTP server so users can paste Google Photos shared album links,
  * select/unselect items, rename movies, and configure TMDB keys directly from their phone browser.
  */
-class CompanionWebServer(private val repo: MediaRepository) {
+class CompanionWebServer(
+    private val repo: MediaRepository,
+    val sessionPin: String = generatePin()
+) {
 
     private var serverSocket: ServerSocket? = null
     private var acceptJob: Job? = null
@@ -79,7 +85,7 @@ class CompanionWebServer(private val repo: MediaRepository) {
 
     fun getServerUrl(): String? {
         val ip = findLocalIpv4() ?: return null
-        return "http://$ip:$port"
+        return "http://$ip:$port/?pin=$sessionPin"
     }
 
     private fun handleClient(socket: Socket) {
@@ -110,13 +116,28 @@ class CompanionWebServer(private val repo: MediaRepository) {
             val requestLine = lines.firstOrNull()?.split(" ") ?: return
             if (requestLine.size < 2) return
             val method = requestLine[0].uppercase()
-            val path = requestLine[1].substringBefore("?")
+            val rawTarget = requestLine[1]
+            val path = rawTarget.substringBefore("?")
+            val query = rawTarget.substringAfter("?", "")
 
             var contentLength = 0
+            var headerPin = ""
+            var cookieHeader = ""
             for (line in lines.drop(1)) {
                 val idx = line.indexOf(':')
-                if (idx > 0 && line.substring(0, idx).trim().equals("Content-Length", ignoreCase = true)) {
-                    contentLength = line.substring(idx + 1).trim().toIntOrNull() ?: 0
+                if (idx <= 0) continue
+                val key = line.substring(0, idx).trim()
+                val value = line.substring(idx + 1).trim()
+                when {
+                    key.equals("Content-Length", ignoreCase = true) -> {
+                        contentLength = value.toIntOrNull() ?: 0
+                    }
+                    key.equals("X-PS-Pin", ignoreCase = true) -> {
+                        headerPin = value
+                    }
+                    key.equals("Cookie", ignoreCase = true) -> {
+                        cookieHeader = value
+                    }
                 }
             }
 
@@ -133,12 +154,24 @@ class CompanionWebServer(private val repo: MediaRepository) {
                 ""
             }
 
-            val (status, contentType, respBody) = dispatch(method, path, bodyStr)
+            val queryPin = extractQueryParam(query, "pin")
+            val cookiePin = extractCookie(cookieHeader, AUTH_COOKIE_NAME)
+            val authorized = isAuthorizedRequest(
+                expectedPin = sessionPin,
+                queryPin = queryPin,
+                headerPin = headerPin,
+                cookiePin = cookiePin
+            )
+
+            val (status, contentType, respBody, setCookie) = dispatch(method, path, bodyStr, authorized)
             val bodyBytes = respBody.toByteArray(StandardCharsets.UTF_8)
             val respHeaders = buildString {
                 append("HTTP/1.1 $status\r\n")
                 append("Content-Type: $contentType; charset=utf-8\r\n")
                 append("Content-Length: ${bodyBytes.size}\r\n")
+                if (setCookie && isPinMatch(sessionPin, queryPin)) {
+                    append("Set-Cookie: $AUTH_COOKIE_NAME=$sessionPin; Path=/; HttpOnly; SameSite=Strict\r\n")
+                }
                 append("Cache-Control: no-store\r\n")
                 append("Connection: close\r\n\r\n")
             }
@@ -148,11 +181,38 @@ class CompanionWebServer(private val repo: MediaRepository) {
         }
     }
 
-    private fun dispatch(method: String, path: String, body: String): Triple<String, String, String> {
+    private data class DispatchResult(
+        val status: String,
+        val contentType: String,
+        val body: String,
+        val setCookie: Boolean = false
+    )
+
+    private fun dispatch(
+        method: String,
+        path: String,
+        body: String,
+        authorized: Boolean
+    ): DispatchResult {
         return try {
+            if (method == "GET" && path == "/") {
+                return if (authorized) {
+                    DispatchResult("200 OK", "text/html", COMPANION_HTML, setCookie = true)
+                } else {
+                    DispatchResult("200 OK", "text/html", PIN_GATE_HTML)
+                }
+            }
+
+            if (path.startsWith("/api/") && !authorized) {
+                return DispatchResult(
+                    "401 Unauthorized",
+                    "application/json",
+                    """{"ok":false,"error":"Pairing PIN required. Scan the TV QR code or enter the PIN shown on TV."}"""
+                )
+            }
+
             when {
-                method == "GET" && path == "/" -> Triple("200 OK", "text/html", COMPANION_HTML)
-                method == "GET" && path == "/api/state" -> Triple("200 OK", "application/json", buildStateJson())
+                method == "GET" && path == "/api/state" -> DispatchResult("200 OK", "application/json", buildStateJson())
                 method == "POST" && path == "/api/albums" -> {
                     val json = JSONObject(body)
                     val url = json.optString("url")
@@ -161,20 +221,20 @@ class CompanionWebServer(private val repo: MediaRepository) {
                     val type = AlbumType.entries.firstOrNull { it.name == typeStr } ?: AlbumType.AUTO
                     val res = runBlocking { repo.addAndSyncAlbum(url, title, type) }
                     if (res.isSuccess) {
-                        Triple("200 OK", "application/json", JSONObject().put("ok", true).put("album", res.getOrThrow().displayTitle).toString())
+                        DispatchResult("200 OK", "application/json", JSONObject().put("ok", true).put("album", res.getOrThrow().displayTitle).toString())
                     } else {
-                        Triple("400 Bad Request", "application/json", JSONObject().put("ok", false).put("error", res.exceptionOrNull()?.message ?: "Failed").toString())
+                        DispatchResult("400 Bad Request", "application/json", JSONObject().put("ok", false).put("error", res.exceptionOrNull()?.message ?: "Failed").toString())
                     }
                 }
                 method == "POST" && path == "/api/albums/toggle" -> {
                     val json = JSONObject(body)
                     runBlocking { repo.toggleAlbumEnabled(json.getString("albumId"), json.getBoolean("enabled")) }
-                    Triple("200 OK", "application/json", """{"ok":true}""")
+                    DispatchResult("200 OK", "application/json", """{"ok":true}""")
                 }
                 method == "POST" && path == "/api/albums/delete" -> {
                     val json = JSONObject(body)
                     runBlocking { repo.removeAlbum(json.getString("albumId")) }
-                    Triple("200 OK", "application/json", """{"ok":true}""")
+                    DispatchResult("200 OK", "application/json", """{"ok":true}""")
                 }
                 method == "POST" && path == "/api/items/toggle" -> {
                     val json = JSONObject(body)
@@ -185,7 +245,7 @@ class CompanionWebServer(private val repo: MediaRepository) {
                             json.getBoolean("hidden")
                         )
                     }
-                    Triple("200 OK", "application/json", """{"ok":true}""")
+                    DispatchResult("200 OK", "application/json", """{"ok":true}""")
                 }
                 method == "POST" && path == "/api/items/rename" -> {
                     val json = JSONObject(body)
@@ -196,7 +256,7 @@ class CompanionWebServer(private val repo: MediaRepository) {
                             json.optString("title")
                         )
                     }
-                    Triple(
+                    DispatchResult(
                         "200 OK",
                         "application/json",
                         JSONObject().put("ok", true).put("matched", meta?.matchedTitle ?: "").toString()
@@ -211,16 +271,16 @@ class CompanionWebServer(private val repo: MediaRepository) {
                         val q = VideoQuality.entries.firstOrNull { it.name == json.optString("quality") }
                         if (q != null) repo.defaultQuality = q
                     }
-                    Triple("200 OK", "application/json", """{"ok":true}""")
+                    DispatchResult("200 OK", "application/json", """{"ok":true}""")
                 }
                 method == "POST" && path == "/api/sync" -> {
                     runBlocking { repo.syncAllEnabledAlbums() }
-                    Triple("200 OK", "application/json", """{"ok":true}""")
+                    DispatchResult("200 OK", "application/json", """{"ok":true}""")
                 }
-                else -> Triple("404 Not Found", "application/json", """{"error":"Not found"}""")
+                else -> DispatchResult("404 Not Found", "application/json", """{"error":"Not found"}""")
             }
         } catch (e: Exception) {
-            Triple("500 Internal Server Error", "application/json", JSONObject().put("ok", false).put("error", e.message ?: "Error").toString())
+            DispatchResult("500 Internal Server Error", "application/json", JSONObject().put("ok", false).put("error", e.message ?: "Error").toString())
         }
     }
 
@@ -292,6 +352,80 @@ class CompanionWebServer(private val repo: MediaRepository) {
 
     companion object {
         const val DEFAULT_PORT = 8765
+        private const val AUTH_COOKIE_NAME = "ps_auth"
+
+        fun generatePin(): String {
+            return (1000 + SecureRandom().nextInt(9000)).toString()
+        }
+
+        fun extractQueryParam(query: String, name: String): String {
+            if (query.isBlank()) return ""
+            for (pair in query.split("&")) {
+                val eq = pair.indexOf('=')
+                val k = if (eq >= 0) pair.substring(0, eq) else pair
+                if (k == name && eq >= 0) {
+                    return runCatching { URLDecoder.decode(pair.substring(eq + 1), "UTF-8") }.getOrDefault("")
+                }
+            }
+            return ""
+        }
+
+        fun extractCookie(cookieHeader: String, name: String): String {
+            if (cookieHeader.isBlank()) return ""
+            for (part in cookieHeader.split(";")) {
+                val eq = part.indexOf('=')
+                if (eq > 0 && part.substring(0, eq).trim() == name) {
+                    return part.substring(eq + 1).trim()
+                }
+            }
+            return ""
+        }
+
+        fun isPinMatch(expectedPin: String, providedPin: String): Boolean {
+            if (expectedPin.isBlank() || providedPin.isBlank()) return false
+            return MessageDigest.isEqual(
+                expectedPin.toByteArray(StandardCharsets.UTF_8),
+                providedPin.trim().toByteArray(StandardCharsets.UTF_8)
+            )
+        }
+
+        fun isAuthorizedRequest(
+            expectedPin: String,
+            queryPin: String = "",
+            headerPin: String = "",
+            cookiePin: String = ""
+        ): Boolean {
+            return isPinMatch(expectedPin, queryPin) ||
+                isPinMatch(expectedPin, headerPin) ||
+                isPinMatch(expectedPin, cookiePin)
+        }
+
+        private val PIN_GATE_HTML = """
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pixel Streamer · Enter Pairing PIN</title>
+<style>
+  body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0b0f;color:#f5f5fa;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;padding:20px}
+  .box{width:100%;max-width:360px;background:#14141d;border:1px solid rgba(255,255,255,.12);border-radius:16px;padding:24px;text-align:center}
+  h1{margin:0 0 8px;font-size:18px;letter-spacing:1.2px;font-family:monospace;color:#00e5a3}
+  p{margin:0 0 16px;font-size:13px;color:#9696a8}
+  input{width:100%;box-sizing:border-box;padding:12px;border-radius:10px;border:1px solid rgba(255,255,255,.15);background:#0d0d13;color:#fff;font-size:18px;text-align:center;letter-spacing:6px}
+  button{margin-top:12px;width:100%;background:linear-gradient(135deg,#00e5a3,#00d4ff);color:#091014;border:0;border-radius:99px;padding:11px;font-weight:700;font-size:14px;cursor:pointer}
+</style>
+</head>
+<body>
+  <form class="box" method="get" action="/">
+    <h1>PIXEL STREAMER</h1>
+    <p>Enter the 4-digit pairing PIN shown in the TV / Tablet URL, or scan the QR code.</p>
+    <input name="pin" type="tel" inputmode="numeric" maxlength="6" placeholder="••••" autofocus required>
+    <button type="submit">Connect</button>
+  </form>
+</body>
+</html>
+""".trimIndent()
 
         private val COMPANION_HTML = """
 <!doctype html>
@@ -398,9 +532,13 @@ class CompanionWebServer(private val repo: MediaRepository) {
 
 <script>
 let state = { albums: [], moviesCount: 0, showsCount: 0, photosCount: 0 };
+const urlPin = new URLSearchParams(window.location.search).get('pin') || '';
 const msg = (t, isErr=false) => { const el=document.getElementById('msg'); el.textContent=t; el.className=isErr?'err':''; };
 async function api(p, body){
-  const r = await fetch(p, body ? {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)} : {});
+  const headers = Object.assign({}, urlPin ? {'X-PS-Pin': urlPin} : {}, body ? {'Content-Type': 'application/json'} : {});
+  const opts = { credentials: 'same-origin', headers };
+  if(body){ opts.method='POST'; opts.body=JSON.stringify(body); }
+  const r = await fetch(p, opts);
   const j = await r.json();
   if(!r.ok || j.ok===false) throw new Error(j.error || 'Request failed');
   return j;

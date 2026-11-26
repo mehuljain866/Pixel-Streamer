@@ -30,6 +30,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
 import java.util.TreeMap
 import java.util.UUID
 
@@ -293,6 +294,10 @@ class MediaRepository(
             fresh.copy(
                 customTitle = prev.customTitle,
                 hidden = prev.hidden,
+                seriesTitle = if (prev.movieMetadata != null && prev.seriesTitle.isNotBlank()) prev.seriesTitle else fresh.seriesTitle,
+                episodeTitle = fresh.episodeTitle.ifBlank { prev.episodeTitle },
+                episodeOverview = fresh.episodeOverview.ifBlank { prev.episodeOverview },
+                episodeStillUrl = fresh.episodeStillUrl ?: prev.episodeStillUrl,
                 movieMetadata = fresh.movieMetadata ?: prev.movieMetadata
             )
         }
@@ -332,6 +337,38 @@ class MediaRepository(
         }
     }
 
+    suspend fun setCustomShowTitleAndRematch(
+        seriesKey: String,
+        newSeriesTitle: String
+    ): Pair<String, MovieMetadata?> {
+        val clean = newSeriesTitle.trim()
+        if (clean.isBlank()) return seriesKey to null
+
+        val bundle = metadataResolver.resolveShowBundle(clean, tmdbApiKey)
+            ?: metadataResolver.resolve(clean, tmdbApiKey, forceLookup = true)?.let {
+                TvShowBundle(showMeta = it, episodesByKey = emptyMap())
+            }
+        val resolvedSeriesName = bundle?.showMeta?.matchedTitle?.ifBlank { clean } ?: clean
+        val newSeriesKey = TitleCleaner.normalizeSeriesKey(resolvedSeriesName).ifBlank {
+            TitleCleaner.normalizeSeriesKey(clean)
+        }
+
+        stateMutex.withLock {
+            val matchingIds = _itemsByAlbum.value.values
+                .flatten()
+                .filter { it.isVideo && it.isEpisode && TitleCleaner.normalizeSeriesKey(it.seriesDisplayTitle) == seriesKey }
+                .map { it.id }
+                .toSet()
+
+            val updatedMap = _itemsByAlbum.value.mapValues { (_, list) ->
+                applyShowRematchToItems(list, matchingIds, resolvedSeriesName, bundle)
+            }
+            _itemsByAlbum.value = updatedMap
+            saveToDisk()
+        }
+        return newSeriesKey to bundle?.showMeta
+    }
+
     suspend fun setCustomMovieTitleAndRematch(
         albumId: String,
         itemId: String,
@@ -339,14 +376,12 @@ class MediaRepository(
     ): MovieMetadata? {
         val clean = newTitle.trim()
         val existing = getItemById(itemId)
-        val parsed = TitleCleaner.parse(clean)
+        if (existing?.isEpisode == true && clean.isNotBlank()) {
+            val key = TitleCleaner.normalizeSeriesKey(existing.seriesDisplayTitle).ifBlank { existing.albumId }
+            return setCustomShowTitleAndRematch(key, clean).second
+        }
         val resolved = if (clean.isNotBlank()) {
-            if (existing?.isEpisode == true || parsed.isEpisode) {
-                metadataResolver.resolveShowBundle(parsed.queryTitle, tmdbApiKey)?.showMeta
-                    ?: metadataResolver.resolve(clean, tmdbApiKey, forceLookup = true)
-            } else {
-                metadataResolver.resolve(clean, tmdbApiKey, forceLookup = true)
-            }
+            metadataResolver.resolve(clean, tmdbApiKey, forceLookup = true)
         } else {
             null
         }
@@ -674,7 +709,7 @@ class MediaRepository(
             }
             root.put("progress", progArr)
 
-            cacheFile.writeText(root.toString())
+            atomicWriteUtf8(cacheFile, root.toString())
         } catch (_: Exception) {
         }
     }
@@ -844,5 +879,53 @@ class MediaRepository(
         private const val KEY_TMDB_API_KEY = "tmdb_api_key"
         private const val KEY_DEFAULT_QUALITY = "default_quality"
         private const val KEY_SLIDESHOW_SEC = "slideshow_seconds"
+
+        fun applyShowRematchToItems(
+            items: List<MediaItem>,
+            targetIds: Set<String>,
+            resolvedSeriesName: String,
+            bundle: TvShowBundle?
+        ): List<MediaItem> {
+            return items.map { item ->
+                if (item.id !in targetIds) {
+                    item
+                } else {
+                    val s = item.seasonNumber ?: 1
+                    val e = item.episodeNumber
+                    val epInfo = if (e != null) bundle?.episodesByKey?.get(s to e) else null
+                    item.copy(
+                        seriesTitle = resolvedSeriesName,
+                        customTitle = "",
+                        movieMetadata = bundle?.showMeta ?: item.movieMetadata,
+                        episodeTitle = epInfo?.title?.ifBlank { item.episodeTitle } ?: item.episodeTitle,
+                        episodeOverview = epInfo?.overview?.ifBlank { item.episodeOverview } ?: item.episodeOverview,
+                        episodeStillUrl = epInfo?.stillUrl ?: item.episodeStillUrl
+                    )
+                }
+            }
+        }
+
+        fun atomicWriteUtf8(target: File, content: String) {
+            val parent = target.parentFile
+            if (parent != null && !parent.exists()) parent.mkdirs()
+            val tmp = File(parent, "${target.name}.tmp")
+            FileOutputStream(tmp).use { fos ->
+                fos.write(content.toByteArray(Charsets.UTF_8))
+                fos.flush()
+                runCatching { fos.fd.sync() }
+            }
+            if (!tmp.renameTo(target)) {
+                val backup = if (target.exists()) File(parent, "${target.name}.bak") else null
+                if (backup != null) {
+                    target.copyTo(backup, overwrite = true)
+                    target.delete()
+                }
+                if (!tmp.renameTo(target)) {
+                    tmp.copyTo(target, overwrite = true)
+                    tmp.delete()
+                }
+                backup?.delete()
+            }
+        }
     }
 }

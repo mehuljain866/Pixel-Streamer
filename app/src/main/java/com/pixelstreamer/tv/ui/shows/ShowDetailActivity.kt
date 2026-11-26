@@ -148,10 +148,10 @@ class ShowDetailActivity : AppCompatActivity() {
             .setPositiveButton("Match & Save") { _, _ ->
                 val entered = input.text?.toString().orEmpty().trim()
                 if (entered.isBlank()) return@setPositiveButton
-                val firstEp = show.allEpisodesChronological.firstOrNull() ?: return@setPositiveButton
                 lifecycleScope.launch {
                     Toast.makeText(this@ShowDetailActivity, "Matching \"$entered\"...", Toast.LENGTH_SHORT).show()
-                    val matched = repo.setCustomMovieTitleAndRematch(firstEp.albumId, firstEp.id, entered)
+                    val (newKey, matched) = repo.setCustomShowTitleAndRematch(seriesKey, entered)
+                    if (newKey.isNotBlank()) seriesKey = newKey
                     renderShow()
                     Toast.makeText(
                         this@ShowDetailActivity,
