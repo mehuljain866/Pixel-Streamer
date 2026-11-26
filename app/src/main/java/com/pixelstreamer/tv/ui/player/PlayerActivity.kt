@@ -41,7 +41,6 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import coil.load
 import com.pixelstreamer.tv.BuildConfig
@@ -72,9 +71,7 @@ class PlayerActivity : AppCompatActivity() {
 
     private var isScrubbing = false
     private var triedOriginalFallback = false
-    private var triedTranscodedFallback = false
     private var hasStartedPlayback = false
-    private var streamRangeSupported = true
 
     private var pendingSeekTargetMs: Long = -1L
     private var isAwaitingSeekReady = false
@@ -101,7 +98,6 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
     private val commitSeekRunnable = Runnable { commitPendingSeek() }
-    private val bufferingWatchdogRunnable = Runnable { handleBufferingTimeout() }
     private val progressTickRunnable = object : Runnable {
         override fun run() {
             updateTimeUi()
@@ -539,7 +535,6 @@ class PlayerActivity : AppCompatActivity() {
                     val pos = player?.currentPosition?.coerceAtLeast(0L) ?: 0L
                     currentQuality = q
                     triedOriginalFallback = false
-                    triedTranscodedFallback = false
                     currentItem?.let { loadStream(it, pos) }
                 }
             }
@@ -628,16 +623,13 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun initPlayerAndStart(item: MediaItem, startPositionMs: Long) {
         val dataSourceFactory = app.preIndexer.buildCacheDataSourceFactory()
-        val extractorsFactory = DefaultExtractorsFactory()
-            .setConstantBitrateSeekingEnabled(true)
-            .setConstantBitrateSeekingAlwaysEnabled(true)
 
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(15_000, 45_000, 300, 1_000)
             .build()
 
         val exo = ExoPlayer.Builder(this)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory, extractorsFactory))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
             .setLoadControl(loadControl)
             .build()
 
@@ -650,26 +642,8 @@ class PlayerActivity : AppCompatActivity() {
                         } else if (binding.controlsOverlay.visibility == View.VISIBLE) {
                             binding.hudBufferSpinner.visibility = View.VISIBLE
                         }
-                        handler.removeCallbacks(bufferingWatchdogRunnable)
-                        handler.postDelayed(bufferingWatchdogRunnable, BUFFERING_WATCHDOG_MS)
                     }
                     Player.STATE_READY -> {
-                        handler.removeCallbacks(bufferingWatchdogRunnable)
-                        val active = currentItem
-                        val intendSeekOrResume =
-                            (isAwaitingSeekReady && expectedSeekPosMs > 5_000L) || activeResumeTargetMs > 5_000L
-                        if (active != null &&
-                            !exo.isCurrentMediaItemSeekable &&
-                            intendSeekOrResume &&
-                            !triedTranscodedFallback
-                        ) {
-                            val recoverPos = if (isAwaitingSeekReady && expectedSeekPosMs >= 0L) {
-                                expectedSeekPosMs
-                            } else {
-                                activeResumeTargetMs
-                            }
-                            if (tryFallbackToTranscoded(recoverPos)) return
-                        }
                         hasStartedPlayback = true
                         isAwaitingSeekReady = false
                         expectedSeekPosMs = -1L
@@ -679,7 +653,6 @@ class PlayerActivity : AppCompatActivity() {
                         updatePipParamsIfActive()
                     }
                     Player.STATE_ENDED -> {
-                        handler.removeCallbacks(bufferingWatchdogRunnable)
                         isAwaitingSeekReady = false
                         persistProgress(forceEnded = true)
                         val cur = currentItem
@@ -695,9 +668,7 @@ class PlayerActivity : AppCompatActivity() {
                             showPausedUi()
                         }
                     }
-                    Player.STATE_IDLE -> {
-                        handler.removeCallbacks(bufferingWatchdogRunnable)
-                    }
+                    Player.STATE_IDLE -> Unit
                 }
             }
 
@@ -722,34 +693,29 @@ class PlayerActivity : AppCompatActivity() {
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                handler.removeCallbacks(bufferingWatchdogRunnable)
                 isAwaitingSeekReady = false
                 val active = currentItem
                 val fallbackPos = maxOf(exo.currentPosition, activeResumeTargetMs).coerceAtLeast(0L)
-                when {
-                    active != null &&
-                        (currentQuality == VideoQuality.ORIGINAL || triedOriginalFallback) &&
-                        !triedTranscodedFallback &&
-                        tryFallbackToTranscoded(fallbackPos) -> Unit
-                    active != null && !triedOriginalFallback && currentQuality != VideoQuality.ORIGINAL -> {
-                        triedOriginalFallback = true
-                        Toast.makeText(
-                            this@PlayerActivity,
-                            "Switching to original stream...",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                        loadStream(active, fallbackPos, overrideQuality = VideoQuality.ORIGINAL)
-                    }
-                    else -> {
-                        binding.loadingOverlay.visibility = View.GONE
-                        binding.hudBufferSpinner.visibility = View.GONE
-                        Toast.makeText(
-                            this@PlayerActivity,
-                            "Playback failed: ${error.localizedMessage ?: "Stream unavailable"}",
-                            Toast.LENGTH_LONG
-                        ).show()
-                        showPausedUi()
-                    }
+                if (active != null) {
+                    app.preIndexer.invalidateWarmUrl(active, currentQuality)
+                }
+                if (active != null && !triedOriginalFallback && currentQuality != VideoQuality.ORIGINAL) {
+                    triedOriginalFallback = true
+                    Toast.makeText(
+                        this@PlayerActivity,
+                        "Switching to original stream...",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    loadStream(active, fallbackPos, overrideQuality = VideoQuality.ORIGINAL)
+                } else {
+                    binding.loadingOverlay.visibility = View.GONE
+                    binding.hudBufferSpinner.visibility = View.GONE
+                    Toast.makeText(
+                        this@PlayerActivity,
+                        "Playback failed: ${error.localizedMessage ?: "Stream unavailable"}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    showPausedUi()
                 }
             }
         })
@@ -766,7 +732,6 @@ class PlayerActivity : AppCompatActivity() {
         activeResumeTargetMs = 0L
         hasStartedPlayback = false
         triedOriginalFallback = false
-        triedTranscodedFallback = false
         isAwaitingSeekReady = false
         pendingSeekTargetMs = -1L
         currentQuality = next.normalizeQuality(currentQuality)
@@ -775,52 +740,11 @@ class PlayerActivity : AppCompatActivity() {
         loadStream(next, 0L)
     }
 
-    private fun tryFallbackToTranscoded(positionMs: Long): Boolean {
-        val active = currentItem ?: return false
-        if (triedTranscodedFallback) return false
-        val nextQuality = when {
-            currentQuality != VideoQuality.Q720P -> VideoQuality.Q720P
-            active.supports1080p -> VideoQuality.Q1080P
-            else -> VideoQuality.Q360P
-        }
-        triedTranscodedFallback = true
-        currentQuality = nextQuality
-        Toast.makeText(
-            this,
-            "Switching to ${nextQuality.label} for faster seek & playback...",
-            Toast.LENGTH_SHORT
-        ).show()
-        loadStream(active, positionMs.coerceAtLeast(0L), overrideQuality = nextQuality)
-        return true
-    }
-
-    private fun handleBufferingTimeout() {
-        val exo = player ?: return
-        if (exo.playbackState != Player.STATE_BUFFERING || isFinishing) return
-        val recoverPos = if (isAwaitingSeekReady && expectedSeekPosMs >= 0L) {
-            expectedSeekPosMs
-        } else {
-            maxOf(exo.currentPosition, activeResumeTargetMs).coerceAtLeast(0L)
-        }
-        if (tryFallbackToTranscoded(recoverPos)) return
-
-        isAwaitingSeekReady = false
-        binding.loadingOverlay.visibility = View.GONE
-        binding.hudBufferSpinner.visibility = View.GONE
-        showTimelineHudOnly(focusTimeline = false)
-        Toast.makeText(
-            this,
-            "Stream is taking long to buffer — tap Settings to change quality or restart",
-            Toast.LENGTH_LONG
-        ).show()
-    }
-
     private fun loadStream(
         item: MediaItem,
         startPositionMs: Long,
         overrideQuality: VideoQuality? = null
     ) {
-        handler.removeCallbacks(bufferingWatchdogRunnable)
         hasStartedPlayback = false
         isAwaitingSeekReady = false
         pendingSeekTargetMs = -1L
@@ -829,11 +753,11 @@ class PlayerActivity : AppCompatActivity() {
         lifecycleScope.launch {
             try {
                 val qualityToUse = overrideQuality ?: currentQuality
-                val streamInfo = repo.resolveFreshStreamInfo(item, qualityToUse)
-                streamRangeSupported = streamInfo.rangeSupported
+                app.preIndexer.cancelPrefetch(item, qualityToUse)
+                val streamUrl = repo.resolveFreshPlaybackUrl(item, qualityToUse)
                 val exo = player ?: return@launch
                 val exoItem = ExoMediaItem.Builder()
-                    .setUri(streamInfo.url)
+                    .setUri(streamUrl)
                     .setCustomCacheKey(StreamPreIndexer.cacheKeyFor(item, qualityToUse))
                     .build()
                 exo.setMediaItem(exoItem, activeResumeTargetMs)
@@ -949,13 +873,11 @@ class PlayerActivity : AppCompatActivity() {
         if (!exo.isCurrentMediaItemSeekable) {
             isAwaitingSeekReady = false
             expectedSeekPosMs = -1L
-            if (!tryFallbackToTranscoded(target)) {
-                Toast.makeText(
-                    this,
-                    "Seek unavailable on this stream — try 1080p/720p in Settings",
-                    Toast.LENGTH_SHORT
-                ).show()
-            }
+            Toast.makeText(
+                this,
+                "Seek isn't indexed on this file — continuing playback",
+                Toast.LENGTH_SHORT
+            ).show()
             updateTimeUi()
             scheduleControlsAutoHide()
             return
@@ -1138,7 +1060,6 @@ class PlayerActivity : AppCompatActivity() {
         const val EXTRA_RESUME_MS = "extra_resume_ms"
         const val EXTRA_QUALITY = "extra_quality"
         private const val ACTION_PIP_TOGGLE_PLAY = "com.pixelstreamer.ACTION_PIP_TOGGLE_PLAY"
-        private const val BUFFERING_WATCHDOG_MS = 12_000L
 
         fun computeSeekTargetMs(basePosMs: Long, deltaMs: Long, durationMs: Long): Long {
             val maxTarget = if (durationMs > 0L) (durationMs - 1000L).coerceAtLeast(0L) else Long.MAX_VALUE

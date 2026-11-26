@@ -229,8 +229,8 @@ class GooglePhotosAlbumScraper(private val httpClient: OkHttpClient) {
 
     /**
      * Resolves a fresh playable high-definition MP4 URL and its byte-range metadata.
-     * For AUTO, prefers Google Photos' faststart transcoded MP4 streams (=m37 / =m22) so
-     * duration and random byte-range seeking work immediately without stalling on huge =dv originals.
+     * For AUTO / ORIGINAL, checks the range-seekable original file (=dv) first so 1080p/720p
+     * movies play in full quality without Google Photos proxy compression or =m22 hangs.
      */
     suspend fun resolveFreshStreamInfo(
         item: MediaItem,
@@ -242,20 +242,11 @@ class GooglePhotosAlbumScraper(private val httpClient: OkHttpClient) {
                 ?: ResolvedStreamInfo(url = dvUrl, totalBytes = item.fileSizeBytes, rangeSupported = true)
         }
 
-        // Fast path for AUTO: probe faststart transcoded MP4 (=m37 or =m22) before HTML detail fetch.
+        // Fast path for AUTO: probe =dv immediately without waiting on /photo/ HTML fetch.
         if (preferredQuality == VideoQuality.AUTO) {
-            val fastItag = if (item.supports1080p && (item.availableItags.isEmpty() || 37 in item.availableItags)) {
-                37
-            } else if (item.availableItags.isEmpty() || 22 in item.availableItags) {
-                22
-            } else {
-                null
-            }
-            if (fastItag != null) {
-                val fastInfo = probeStreamInfo("${item.baseUrl}=m$fastItag")
-                if (fastInfo != null && fastInfo.rangeSupported) {
-                    return@withContext fastInfo
-                }
+            val dvInfo = probeStreamInfo(dvUrl)
+            if (dvInfo != null && dvInfo.rangeSupported) {
+                return@withContext dvInfo
             }
         }
 
@@ -269,17 +260,13 @@ class GooglePhotosAlbumScraper(private val httpClient: OkHttpClient) {
             signedUrls = signedUrls,
             preferred = preferredQuality
         )
-        var firstReachable: ResolvedStreamInfo? = null
         for (candidate in candidates) {
-            val probed = probeStreamInfo(candidate) ?: continue
-            if (probed.rangeSupported) {
+            val probed = probeStreamInfo(candidate)
+            if (probed != null) {
                 return@withContext probed
             }
-            if (firstReachable == null) {
-                firstReachable = probed
-            }
         }
-        firstReachable ?: ResolvedStreamInfo(url = dvUrl, totalBytes = item.fileSizeBytes, rangeSupported = true)
+        ResolvedStreamInfo(url = dvUrl, totalBytes = item.fileSizeBytes, rangeSupported = true)
     }
 
     suspend fun resolveFreshStreamUrl(

@@ -38,7 +38,21 @@ class StreamPreIndexer(
 
     private val warmUrls = ConcurrentHashMap<String, WarmEntry>()
     private val inFlightKeys = Collections.synchronizedSet(mutableSetOf<String>())
+    private val cancelledKeys = Collections.synchronizedSet(mutableSetOf<String>())
+    private val activeWriters = ConcurrentHashMap<String, CacheWriter>()
     private val prefetchSemaphore = Semaphore(2)
+
+    fun cancelPrefetch(item: MediaItem, quality: VideoQuality) {
+        val diskKey = cacheKeyFor(item, quality)
+        if (diskKey in inFlightKeys) {
+            cancelledKeys.add(diskKey)
+        }
+        activeWriters.remove(diskKey)?.cancel()
+    }
+
+    fun invalidateWarmUrl(item: MediaItem, quality: VideoQuality) {
+        warmUrls.remove("${item.id}_${quality.name}")
+    }
 
     private val upstreamFactory: OkHttpDataSource.Factory by lazy {
         OkHttpDataSource.Factory(httpClient)
@@ -106,6 +120,7 @@ class StreamPreIndexer(
                 val cacheDs = buildCacheDataSourceFactory().createDataSource()
                 val uri = Uri.parse(info.url)
                 for ((offset, len) in windows) {
+                    if (diskKey in cancelledKeys) break
                     if (len <= 0L) continue
                     val spec = DataSpec.Builder()
                         .setUri(uri)
@@ -113,14 +128,20 @@ class StreamPreIndexer(
                         .setPosition(offset)
                         .setLength(len)
                         .build()
+                    val writer = CacheWriter(cacheDs, spec, null, null)
+                    activeWriters[diskKey] = writer
                     runCatching {
-                        CacheWriter(cacheDs, spec, null, null).cache()
+                        if (diskKey in cancelledKeys) writer.cancel()
+                        else writer.cache()
                     }
+                    activeWriters.remove(diskKey, writer)
                 }
             }
         } catch (_: Exception) {
         } finally {
+            activeWriters.remove(diskKey)
             inFlightKeys.remove(diskKey)
+            cancelledKeys.remove(diskKey)
         }
     }
 
@@ -129,7 +150,7 @@ class StreamPreIndexer(
         private const val WARM_URL_TTL_MS = 15L * 60L * 1000L
 
         fun cacheKeyFor(item: MediaItem, quality: VideoQuality): String {
-            return "ps2_${item.id}_${quality.name}_${item.baseUrl.hashCode()}"
+            return "ps_${item.id}_${quality.name}_${item.baseUrl.hashCode()}"
         }
 
         /**
