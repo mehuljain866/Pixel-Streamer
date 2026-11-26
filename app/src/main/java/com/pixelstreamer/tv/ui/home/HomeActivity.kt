@@ -98,6 +98,8 @@ class HomeActivity : AppCompatActivity() {
 
     private fun setupRecycler() {
         rowAdapter = RowAdapter(
+            onHeroPlayClicked = { handleHeroPlayClick() },
+            onHeroDetailsClicked = { handleHeroDetailsClick() },
             onItemFocused = { item -> updateHeroForItem(item) },
             onItemClicked = { item, style ->
                 if (style == RowStyle.CONTINUE_WATCHING) {
@@ -164,40 +166,40 @@ class HomeActivity : AppCompatActivity() {
             startActivity(Intent(this, AlbumsActivity::class.java))
         }
 
-        binding.btnHeroPlay.setOnClickListener {
-            val show = heroShow
-            val target = heroItem
-            when {
-                show != null -> {
-                    val ep = show.nextUpEpisode
-                    val prog = repo.progressMap.value[ep.id]
-                    val startMs = if (prog != null && prog.isInProgress) prog.positionMs else 0L
-                    launchPlayer(ep.id, startMs)
-                }
-                target != null -> {
-                    if (target.isVideo) {
-                        val prog = repo.progressMap.value[target.id]
-                        val startMs = if (prog != null && prog.isInProgress) prog.positionMs else 0L
-                        launchPlayer(target.id, startMs)
-                    } else {
-                        openMediaItem(target)
-                    }
-                }
-                else -> startActivity(Intent(this, AlbumsActivity::class.java))
-            }
-        }
-
-        binding.btnHeroDetails.setOnClickListener {
-            val show = heroShow
-            val target = heroItem
-            when {
-                show != null -> openShow(show)
-                target != null -> openMediaItem(target)
-                else -> startActivity(Intent(this, AlbumsActivity::class.java))
-            }
-        }
-
         updateTabSelection()
+    }
+
+    private fun handleHeroPlayClick() {
+        val show = heroShow
+        val target = heroItem
+        when {
+            show != null -> {
+                val ep = show.nextUpEpisode
+                val prog = repo.progressMap.value[ep.id]
+                val startMs = if (prog != null && prog.isInProgress) prog.positionMs else 0L
+                launchPlayer(ep.id, startMs)
+            }
+            target != null -> {
+                if (target.isVideo) {
+                    val prog = repo.progressMap.value[target.id]
+                    val startMs = if (prog != null && prog.isInProgress) prog.positionMs else 0L
+                    launchPlayer(target.id, startMs)
+                } else {
+                    openMediaItem(target)
+                }
+            }
+            else -> startActivity(Intent(this, AlbumsActivity::class.java))
+        }
+    }
+
+    private fun handleHeroDetailsClick() {
+        val show = heroShow
+        val target = heroItem
+        when {
+            show != null -> openShow(show)
+            target != null -> openMediaItem(target)
+            else -> startActivity(Intent(this, AlbumsActivity::class.java))
+        }
     }
 
     private fun setupQuickResumeOverlay() {
@@ -327,7 +329,9 @@ class HomeActivity : AppCompatActivity() {
 
         if (hasContent) {
             if (wasEmptyVisible) {
-                binding.btnHeroPlay.requestFocus()
+                binding.rowsRecycler.post {
+                    (binding.rowsRecycler.findViewHolderForAdapterPosition(0) as? RowAdapter.HeroVH)?.focusPlay()
+                }
             }
             val firstShow = rows.firstOrNull { it.shows.isNotEmpty() }?.shows?.firstOrNull()
             val firstItem = rows.firstOrNull { it.items.isNotEmpty() }?.items?.firstOrNull()
@@ -402,29 +406,17 @@ class HomeActivity : AppCompatActivity() {
         heroItem = null
         heroShow = null
         binding.heroBackdrop.setImageResource(R.color.nf_bg)
-        binding.heroTitleLogo.visibility = View.GONE
-        binding.heroTitle.visibility = View.VISIBLE
-        binding.heroTitle.text = "Your Personal Google Photos Cinema"
-        binding.heroMeta.text = "No Google Sign-In Required  •  Shared Album Links"
-        binding.heroOverview.text =
-            "Paste a Google Photos shared album link containing movies, TV show episodes, or photos. Pixel Streamer builds your streaming library automatically."
-        binding.btnHeroPlay.text = "+  Add Album"
-        binding.btnHeroDetails.visibility = View.GONE
     }
 
     private fun updateHeroForItem(item: MediaItem) {
         heroItem = item
         heroShow = null
-        binding.btnHeroDetails.visibility = View.VISIBLE
         binding.heroBackdrop.loadUrlWithFallback(
             primaryUrl = item.backdropImageUrl,
             fallbackUrl = item.thumbnailUrl(1280, 720)
         )
 
         val meta = item.movieMetadata
-        binding.heroTitle.text = item.displayTitle
-        binding.heroTitleLogo.bindTitleLogo(item.titleLogoUrl, binding.heroTitle)
-
         val parts = mutableListOf<String>()
         meta?.year?.let { parts.add(it.toString()) }
         if (item.displayDuration.isNotBlank()) parts.add(item.displayDuration)
@@ -435,7 +427,6 @@ class HomeActivity : AppCompatActivity() {
         if (parts.isEmpty()) {
             parts.add(if (item.isVideo) "${item.width}×${item.height}" else "Photo")
         }
-        binding.heroMeta.text = parts.joinToString("   •   ")
 
         val overview = when {
             item.isEpisode && item.episodeOverview.isNotBlank() -> item.episodeOverview
@@ -443,26 +434,34 @@ class HomeActivity : AppCompatActivity() {
             item.caption.isNotBlank() && !item.caption.contains("_1080p", true) && !item.caption.endsWith(".mp4", true) -> item.caption
             else -> if (item.isVideo) "Stream directly from your shared Google Photos library." else "Shared Google Photos gallery."
         }
-        binding.heroOverview.text = overview
 
         val prog = repo.progressMap.value[item.id]
-        binding.btnHeroPlay.text = when {
+        val playLabel = when {
             !item.isVideo -> "▶  View Photo"
             prog != null && prog.isInProgress -> "▶  Resume"
             else -> "▶  Play"
         }
+
+        rowAdapter.updateHero(
+            HeroUiState(
+                title = item.displayTitle,
+                titleLogoUrl = item.titleLogoUrl,
+                meta = parts.joinToString("   •   "),
+                overview = overview,
+                playLabel = playLabel,
+                showDetailsButton = true
+            ),
+            binding.rowsRecycler
+        )
     }
 
     private fun updateHeroForShow(show: ShowGroup) {
         heroShow = show
         heroItem = null
-        binding.btnHeroDetails.visibility = View.VISIBLE
         binding.heroBackdrop.loadUrlWithFallback(
             primaryUrl = show.backdropUrl.orEmpty(),
             fallbackUrl = show.posterUrl
         )
-        binding.heroTitle.text = show.title
-        binding.heroTitleLogo.bindTitleLogo(show.logoUrl, binding.heroTitle)
 
         val parts = mutableListOf<String>()
         show.year?.let { parts.add(it.toString()) }
@@ -470,13 +469,23 @@ class HomeActivity : AppCompatActivity() {
         parts.add("${show.episodeCount} Episodes")
         show.rating?.let { parts.add("★ ${"%.1f".format(it)}") }
         if (show.genres.isNotEmpty()) parts.add(show.genres.take(2).joinToString(" · "))
-        binding.heroMeta.text = parts.joinToString("   •   ")
-        binding.heroOverview.text = show.overview
 
         val ep = show.nextUpEpisode
         val prog = repo.progressMap.value[ep.id]
         val code = ep.episodeCode.ifBlank { "E01" }
-        binding.btnHeroPlay.text = if (prog != null && prog.isInProgress) "▶  Resume $code" else "▶  Play $code"
+        val playLabel = if (prog != null && prog.isInProgress) "▶  Resume $code" else "▶  Play $code"
+
+        rowAdapter.updateHero(
+            HeroUiState(
+                title = show.title,
+                titleLogoUrl = show.logoUrl,
+                meta = parts.joinToString("   •   "),
+                overview = show.overview,
+                playLabel = playLabel,
+                showDetailsButton = true
+            ),
+            binding.rowsRecycler
+        )
     }
 
     private fun launchPlayer(itemId: String, startMs: Long) {

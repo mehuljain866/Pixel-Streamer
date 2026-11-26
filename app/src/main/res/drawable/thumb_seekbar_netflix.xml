@@ -1,16 +1,38 @@
 <?xml version="1.0" encoding="utf-8"?>
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:state_focused="true">
-        <shape android:shape="oval">
-            <size android:width="20dp" android:height="20dp" />
-            <solid android:color="#FFFFFF" />
-            <stroke android:width="3dp" android:color="#E50914" />
-        </shape>
+        <layer-list>
+            <item android:width="22dp" android:height="22dp">
+                <shape android:shape="oval">
+                    <solid android:color="#4400E5A3" />
+                </shape>
+            </item>
+            <item
+                android:width="14dp"
+                android:height="14dp"
+                android:gravity="center">
+                <shape android:shape="oval">
+                    <solid android:color="#FFFFFF" />
+                    <stroke android:width="2dp" android:color="#00E5A3" />
+                </shape>
+            </item>
+        </layer-list>
     </item>
     <item>
-        <shape android:shape="oval">
-            <size android:width="14dp" android:height="14dp" />
-            <solid android:color="#E50914" />
-        </shape>
+        <layer-list>
+            <item android:width="22dp" android:height="22dp">
+                <shape android:shape="oval">
+                    <solid android:color="@android:color/transparent" />
+                </shape>
+            </item>
+            <item
+                android:width="12dp"
+                android:height="12dp"
+                android:gravity="center">
+                <shape android:shape="oval">
+                    <solid android:color="#FFFFFF" />
+                </shape>
+            </item>
+        </layer-list>
     </item>
 </selector>

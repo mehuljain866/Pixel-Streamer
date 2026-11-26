@@ -632,6 +632,20 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN &&
+            event.keyCode == KeyEvent.KEYCODE_DPAD_DOWN &&
+            binding.settingsPopupOverlay.visibility != View.VISIBLE &&
+            player?.isPlaying == true
+        ) {
+            if (binding.controlsOverlay.visibility == View.VISIBLE) {
+                hideAllOverlays()
+            }
+            return true
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         val exo = player
         val controlsVisible = binding.controlsOverlay.visibility == View.VISIBLE
@@ -671,11 +685,16 @@ class PlayerActivity : AppCompatActivity() {
                     return true
                 }
             }
-            KeyEvent.KEYCODE_DPAD_UP,
-            KeyEvent.KEYCODE_DPAD_DOWN -> {
+            KeyEvent.KEYCODE_DPAD_UP -> {
                 if (!controlsVisible) {
                     // Show timeline HUD WITHOUT pausing playback!
                     showTimelineHudOnly(focusTimeline = true)
+                    return true
+                }
+            }
+            KeyEvent.KEYCODE_DPAD_DOWN -> {
+                if (controlsVisible && exo?.isPlaying == true) {
+                    hideAllOverlays()
                     return true
                 }
             }

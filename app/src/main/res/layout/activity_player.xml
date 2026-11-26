@@ -152,14 +152,17 @@
             <SeekBar
                 android:id="@+id/pauseSeekBar"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
+                android:layout_height="28dp"
                 android:focusable="true"
                 android:max="1000"
-                android:paddingStart="0dp"
-                android:paddingEnd="0dp"
-                android:progressDrawable="@drawable/bg_seekbar_netflix"
+                android:maxHeight="4dp"
+                android:minHeight="4dp"
+                android:paddingStart="11dp"
+                android:paddingEnd="11dp"
+                android:progressDrawable="@drawable/bg_seekbar_player_track"
                 android:splitTrack="false"
-                android:thumb="@drawable/thumb_seekbar_netflix" />
+                android:thumb="@drawable/thumb_seekbar_netflix"
+                android:thumbOffset="11dp" />
 
             <LinearLayout
                 android:layout_width="match_parent"
