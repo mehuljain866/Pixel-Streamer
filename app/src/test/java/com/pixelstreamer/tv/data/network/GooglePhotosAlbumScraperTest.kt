@@ -134,5 +134,22 @@ class GooglePhotosAlbumScraperTest {
 
         val movie1080 = movie720.copy(width = 1920, height = 802)
         assertTrue(com.pixelstreamer.tv.data.model.VideoQuality.Q1080P in movie1080.supportedQualities())
+        assertEquals(
+            com.pixelstreamer.tv.data.model.VideoQuality.AUTO,
+            movie720.normalizeQuality(com.pixelstreamer.tv.data.model.VideoQuality.Q1080P)
+        )
+        assertEquals(
+            com.pixelstreamer.tv.data.model.VideoQuality.Q1080P,
+            movie1080.normalizeQuality(com.pixelstreamer.tv.data.model.VideoQuality.Q1080P)
+        )
+
+        val merged = scraper.mergeCachedVideoFields(
+            fresh = movie720.copy(durationMs = 5_400_000L),
+            cached = movie720.copy(originalFilename = "Cached.720p.mp4", fileSizeBytes = 900_000_000L, availableItags = listOf(22, 18))
+        )
+        assertEquals("Cached.720p.mp4", merged.originalFilename)
+        assertEquals(900_000_000L, merged.fileSizeBytes)
+        assertEquals(listOf(22, 18), merged.availableItags)
+        assertEquals(5_400_000L, merged.durationMs)
     }
 }

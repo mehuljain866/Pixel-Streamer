@@ -110,4 +110,29 @@ class CompanionSecurityAndSyncTest {
 
         assertEquals("Interstellar", updated[2].displayTitle)
     }
+
+    @Test
+    fun applyVisibilityUpdatesHandlesBatchChangesWithoutTouchingUnchangedItems() {
+        val base = MediaItem(
+            id = "a",
+            albumId = "alb1",
+            albumShareId = "s1",
+            albumKey = "k1",
+            baseUrl = "https://lh3.googleusercontent.com/pw/a",
+            width = 1920,
+            height = 1080,
+            timestampMs = 0L,
+            isVideo = true
+        )
+        val b = base.copy(id = "b", hidden = true)
+        val c = base.copy(id = "c", hidden = false)
+
+        val result = MediaRepository.applyVisibilityUpdates(
+            items = listOf(base, b, c),
+            hiddenById = mapOf("a" to true, "b" to false)
+        )
+        assertTrue(result[0].hidden)
+        assertFalse(result[1].hidden)
+        assertFalse(result[2].hidden)
+    }
 }

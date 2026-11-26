@@ -214,11 +214,7 @@ class PlayerActivity : AppCompatActivity() {
             val cur = currentItem ?: return@setOnClickListener
             val next = repo.getNextChronologicalVideo(cur) ?: return@setOnClickListener
             persistProgress()
-            currentItem = next
-            resumePositionMs = 0L
-            triedOriginalFallback = false
-            bindPauseMetadata(next)
-            loadStream(next, 0L)
+            switchToItem(next)
         }
 
         binding.btnPauseBack.setOnClickListener {
@@ -491,16 +487,12 @@ class PlayerActivity : AppCompatActivity() {
                         val cur = currentItem
                         val next = cur?.let { repo.getNextChronologicalVideo(it) }
                         if (next != null) {
-                            currentItem = next
-                            hasStartedPlayback = false
-                            triedOriginalFallback = false
-                            bindPauseMetadata(next)
                             Toast.makeText(
                                 this@PlayerActivity,
                                 "Playing next: ${next.displayTitle}",
                                 Toast.LENGTH_SHORT
                             ).show()
-                            loadStream(next, 0L)
+                            switchToItem(next)
                         } else {
                             showPausedUi()
                         }
@@ -554,6 +546,19 @@ class PlayerActivity : AppCompatActivity() {
         binding.playerView.player = exo
         loadStream(item, startPositionMs)
         handler.postDelayed(progressTickRunnable, 1000L)
+    }
+
+    private fun switchToItem(next: MediaItem) {
+        currentItem = next
+        resumePositionMs = 0L
+        hasStartedPlayback = false
+        triedOriginalFallback = false
+        isAwaitingSeekReady = false
+        pendingSeekTargetMs = -1L
+        currentQuality = next.normalizeQuality(currentQuality)
+        hideAllOverlays()
+        bindPauseMetadata(next)
+        loadStream(next, 0L)
     }
 
     private fun loadStream(item: MediaItem, startPositionMs: Long, forceOriginal: Boolean = false) {

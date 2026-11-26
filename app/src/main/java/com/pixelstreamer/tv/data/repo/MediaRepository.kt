@@ -155,8 +155,18 @@ class MediaRepository(
                             existingItems = _itemsByAlbum.value[album.id].orEmpty(),
                             freshItems = synced.second.map { it.copy(albumId = album.id) }
                         )
-                        _albums.value = _albums.value.map {
-                            if (it.id == album.id) synced.first.copy(itemCount = merged.size) else it
+                        // Merge onto latest AlbumSource inside lock so concurrent enable/title/type edits aren't lost.
+                        _albums.value = _albums.value.map { current ->
+                            if (current.id == album.id) {
+                                current.copy(
+                                    resolvedUrl = synced.first.resolvedUrl,
+                                    title = synced.first.title,
+                                    lastSyncedAt = synced.first.lastSyncedAt,
+                                    itemCount = merged.size
+                                )
+                            } else {
+                                current
+                            }
                         }
                         _itemsByAlbum.value = _itemsByAlbum.value.toMutableMap().apply {
                             put(album.id, merged)
@@ -173,10 +183,10 @@ class MediaRepository(
     }
 
     private suspend fun syncSingleAlbumInternal(album: AlbumSource): Pair<AlbumSource, List<MediaItem>> {
-        val scraped = scraper.fetchAlbum(album.url)
+        val existingById = _itemsByAlbum.value[album.id].orEmpty().associateBy { it.id }
+        val scraped = scraper.fetchAlbum(album.url, cachedItemsById = existingById)
         val albumDisplayHint = album.customTitle.ifBlank { scraped.albumTitle }
         val forceShowAlbum = album.type == AlbumType.SHOWS
-        val existingById = _itemsByAlbum.value[album.id].orEmpty().associateBy { it.id }
 
         // First pass: parse filenames/captions to identify Movies vs TV Episodes
         val parsedPairs = scraped.items.map { item ->
@@ -328,11 +338,15 @@ class MediaRepository(
     }
 
     suspend fun toggleItemHidden(albumId: String, itemId: String, hidden: Boolean) {
+        setItemsVisibility(albumId, mapOf(itemId to hidden))
+    }
+
+    suspend fun setItemsVisibility(albumId: String, hiddenById: Map<String, Boolean>) {
+        if (hiddenById.isEmpty()) return
         stateMutex.withLock {
-            val list = _itemsByAlbum.value[albumId].orEmpty().map {
-                if (it.id == itemId) it.copy(hidden = hidden) else it
-            }
-            _itemsByAlbum.value = _itemsByAlbum.value.toMutableMap().apply { put(albumId, list) }
+            val existing = _itemsByAlbum.value[albumId].orEmpty()
+            val updated = applyVisibilityUpdates(existing, hiddenById)
+            _itemsByAlbum.value = _itemsByAlbum.value.toMutableMap().apply { put(albumId, updated) }
             saveToDisk()
         }
     }
@@ -879,6 +893,16 @@ class MediaRepository(
         private const val KEY_TMDB_API_KEY = "tmdb_api_key"
         private const val KEY_DEFAULT_QUALITY = "default_quality"
         private const val KEY_SLIDESHOW_SEC = "slideshow_seconds"
+
+        fun applyVisibilityUpdates(
+            items: List<MediaItem>,
+            hiddenById: Map<String, Boolean>
+        ): List<MediaItem> {
+            return items.map { item ->
+                val newHidden = hiddenById[item.id]
+                if (newHidden != null && item.hidden != newHidden) item.copy(hidden = newHidden) else item
+            }
+        }
 
         fun applyShowRematchToItems(
             items: List<MediaItem>,

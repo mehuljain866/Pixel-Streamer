@@ -170,18 +170,20 @@ class AlbumsActivity : AppCompatActivity() {
                 checked[which] = isChecked
             }
             .setPositiveButton("Save Selection") { _, _ ->
-                lifecycleScope.launch {
+                val changes = buildMap<String, Boolean> {
                     items.forEachIndexed { idx, item ->
                         val shouldHide = !checked[idx]
-                        if (item.hidden != shouldHide) {
-                            repo.toggleItemHidden(album.id, item.id, shouldHide)
-                        }
+                        if (item.hidden != shouldHide) put(item.id, shouldHide)
                     }
+                }
+                if (changes.isNotEmpty()) {
+                    lifecycleScope.launch { repo.setItemsVisibility(album.id, changes) }
                 }
             }
             .setNeutralButton("Show All") { _, _ ->
-                lifecycleScope.launch {
-                    items.forEach { if (it.hidden) repo.toggleItemHidden(album.id, it.id, false) }
+                val toUnhide = items.filter { it.hidden }.associate { it.id to false }
+                if (toUnhide.isNotEmpty()) {
+                    lifecycleScope.launch { repo.setItemsVisibility(album.id, toUnhide) }
                 }
             }
             .setNegativeButton("Cancel", null)

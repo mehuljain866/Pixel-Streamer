@@ -38,7 +38,10 @@ data class ResolvedStreamInfo(
 
 class GooglePhotosAlbumScraper(private val httpClient: OkHttpClient) {
 
-    suspend fun fetchAlbum(rawInputUrl: String): ScrapedAlbumResult = withContext(Dispatchers.IO) {
+    suspend fun fetchAlbum(
+        rawInputUrl: String,
+        cachedItemsById: Map<String, MediaItem> = emptyMap()
+    ): ScrapedAlbumResult = withContext(Dispatchers.IO) {
         val targetUrl = extractUrlFromText(rawInputUrl)
             ?: throw IllegalArgumentException("Please enter a valid Google Photos shared link.")
 
@@ -57,8 +60,8 @@ class GooglePhotosAlbumScraper(private val httpClient: OkHttpClient) {
 
         val parsed = parseAlbumHtml(finalUrl, html)
 
-        // Enrich videos with original filename (HEAD =dv) & available stream qualities (/photo/<id>).
-        val enriched = enrichItems(parsed.items, parsed.shareId, parsed.albumKey)
+        // Enrich uncached videos with original filename (HEAD =dv); skip cached items and redundant /photo/ HTML fetches.
+        val enriched = enrichItems(parsed.items, parsed.shareId, parsed.albumKey, cachedItemsById)
         parsed.copy(items = enriched)
     }
 
@@ -160,29 +163,44 @@ class GooglePhotosAlbumScraper(private val httpClient: OkHttpClient) {
     private suspend fun enrichItems(
         items: List<MediaItem>,
         shareId: String,
-        albumKey: String
+        albumKey: String,
+        cachedItemsById: Map<String, MediaItem>
     ): List<MediaItem> = coroutineScope {
-        val semaphore = Semaphore(6)
+        val semaphore = Semaphore(10)
         items.map { item ->
             async {
+                if (!item.isVideo) {
+                    return@async item
+                }
+                val cached = cachedItemsById[item.id]
+                if (cached != null && cached.originalFilename.isNotBlank()) {
+                    return@async mergeCachedVideoFields(item, cached)
+                }
                 semaphore.withPermit {
-                    if (item.isVideo) {
-                        val (filename, sizeBytes) = fetchFilenameAndSize("${item.baseUrl}=dv")
-                        val detail = fetchItemDetail(shareId, albumKey, item.id)
-                        item.copy(
-                            originalFilename = filename.ifBlank { item.originalFilename },
-                            fileSizeBytes = if (sizeBytes > 0L) sizeBytes else item.fileSizeBytes,
-                            caption = detail?.caption?.ifBlank { item.caption } ?: item.caption,
-                            availableItags = detail?.availableItags?.takeIf { it.isNotEmpty() } ?: item.availableItags,
-                            durationMs = detail?.durationMs?.takeIf { it > 0L } ?: item.durationMs
-                        )
-                    } else {
-                        // Keep photo album loading super fast; only fetch filename if needed
-                        item
-                    }
+                    val (filename, sizeBytes) = fetchFilenameAndSize("${item.baseUrl}=dv")
+                    // Only fetch full /photo/<id> HTML if both caption & filename are missing or duration wasn't in album data.
+                    val needDetail = (filename.isBlank() && item.caption.isBlank()) || item.durationMs <= 0L
+                    val detail = if (needDetail) fetchItemDetail(shareId, albumKey, item.id) else null
+                    item.copy(
+                        originalFilename = filename.ifBlank { item.originalFilename },
+                        fileSizeBytes = if (sizeBytes > 0L) sizeBytes else item.fileSizeBytes,
+                        caption = detail?.caption?.ifBlank { item.caption } ?: item.caption,
+                        availableItags = detail?.availableItags?.takeIf { it.isNotEmpty() } ?: item.availableItags,
+                        durationMs = detail?.durationMs?.takeIf { it > 0L } ?: item.durationMs
+                    )
                 }
             }
         }.awaitAll()
+    }
+
+    fun mergeCachedVideoFields(fresh: MediaItem, cached: MediaItem): MediaItem {
+        return fresh.copy(
+            originalFilename = cached.originalFilename.ifBlank { fresh.originalFilename },
+            fileSizeBytes = if (cached.fileSizeBytes > 0L) cached.fileSizeBytes else fresh.fileSizeBytes,
+            caption = fresh.caption.ifBlank { cached.caption },
+            availableItags = fresh.availableItags.ifEmpty { cached.availableItags },
+            durationMs = if (fresh.durationMs > 0L) fresh.durationMs else cached.durationMs
+        )
     }
 
     suspend fun fetchItemDetail(
