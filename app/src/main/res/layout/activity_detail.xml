@@ -1,0 +1,217 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#0B0B0F">
+
+    <ImageView
+        android:id="@+id/detailBackdrop"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:contentDescription="@null"
+        android:scaleType="centerCrop" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#BD0B0B0F" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/bg_hero_gradient_horizontal" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="48dp"
+        android:paddingTop="32dp"
+        android:paddingEnd="48dp"
+        android:paddingBottom="32dp">
+
+        <ImageView
+            android:id="@+id/detailPoster"
+            android:layout_width="210dp"
+            android:layout_height="315dp"
+            android:background="@color/nf_surface"
+            android:contentDescription="@null"
+            android:foreground="@drawable/bg_card_focus_frame"
+            android:scaleType="centerCrop" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="36dp"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/detailTag"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="@font/pixel_bold"
+                android:letterSpacing="0.1"
+                android:text="PIXEL STREAMER"
+                android:textColor="@color/ps_accent"
+                android:textSize="11sp" />
+
+            <ImageView
+                android:id="@+id/detailTitleLogo"
+                android:layout_width="360dp"
+                android:layout_height="76dp"
+                android:layout_marginTop="4dp"
+                android:adjustViewBounds="true"
+                android:contentDescription="@null"
+                android:scaleType="fitStart"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/detailTitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:fontFamily="@font/pixel_bold"
+                android:textColor="#FFFFFF"
+                android:textSize="30sp" />
+
+            <TextView
+                android:id="@+id/detailMeta"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:textColor="#46D369"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/detailGenres"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:textColor="#9A9AA6"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/detailOverview"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:lineSpacingMultiplier="1.2"
+                android:maxLines="4"
+                android:textColor="#D0D0D8"
+                android:textSize="14sp" />
+
+            <TextView
+                android:id="@+id/detailCredits"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:textColor="#8E8E98"
+                android:textSize="12sp" />
+
+            <ProgressBar
+                android:id="@+id/detailProgressBar"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="320dp"
+                android:layout_height="4dp"
+                android:layout_marginTop="12dp"
+                android:max="100"
+                android:progressDrawable="@drawable/bg_seekbar_netflix"
+                android:visibility="gone" />
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="18dp"
+                android:orientation="vertical">
+
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/btnDetailPlay"
+                        android:layout_width="wrap_content"
+                        android:layout_height="42dp"
+                        android:background="@drawable/bg_pill_white"
+                        android:focusable="true"
+                        android:paddingStart="24dp"
+                        android:paddingEnd="24dp"
+                        android:text="▶  Play"
+                        android:textAllCaps="false"
+                        android:textColor="#111115"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
+
+                    <Button
+                        android:id="@+id/btnDetailRestart"
+                        android:layout_width="wrap_content"
+                        android:layout_height="42dp"
+                        android:layout_marginStart="10dp"
+                        android:background="@drawable/bg_pill_glass"
+                        android:focusable="true"
+                        android:paddingStart="18dp"
+                        android:paddingEnd="18dp"
+                        android:text="↺  Start Over"
+                        android:textAllCaps="false"
+                        android:textColor="#FFFFFF"
+                        android:textSize="13sp"
+                        android:visibility="gone" />
+
+                    <Button
+                        android:id="@+id/btnDetailEpisodes"
+                        android:layout_width="wrap_content"
+                        android:layout_height="42dp"
+                        android:layout_marginStart="10dp"
+                        android:background="@drawable/bg_pill_glass"
+                        android:focusable="true"
+                        android:paddingStart="18dp"
+                        android:paddingEnd="18dp"
+                        android:text="All Episodes"
+                        android:textAllCaps="false"
+                        android:textColor="#FFFFFF"
+                        android:textSize="13sp"
+                        android:visibility="gone" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/btnDetailQuality"
+                        android:layout_width="wrap_content"
+                        android:layout_height="38dp"
+                        android:background="@drawable/bg_pill_glass"
+                        android:focusable="true"
+                        android:paddingStart="16dp"
+                        android:paddingEnd="16dp"
+                        android:text="Quality: Auto"
+                        android:textAllCaps="false"
+                        android:textColor="#FFFFFF"
+                        android:textSize="12sp" />
+
+                    <Button
+                        android:id="@+id/btnDetailRename"
+                        android:layout_width="wrap_content"
+                        android:layout_height="38dp"
+                        android:layout_marginStart="10dp"
+                        android:background="@drawable/bg_pill_glass"
+                        android:focusable="true"
+                        android:paddingStart="16dp"
+                        android:paddingEnd="16dp"
+                        android:text="✎  Fix Title / Art"
+                        android:textAllCaps="false"
+                        android:textColor="#FFFFFF"
+                        android:textSize="12sp" />
+                </LinearLayout>
+            </LinearLayout>
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>

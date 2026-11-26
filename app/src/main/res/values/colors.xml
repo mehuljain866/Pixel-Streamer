@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="nf_bg">#0B0B0F</color>
+    <color name="nf_surface">#16161D</color>
+    <color name="nf_surface_elevated">#23232E</color>
+    <color name="nf_red">#00E5A3</color>
+    <color name="ps_accent">#00E5A3</color>
+    <color name="ps_cyan">#00D4FF</color>
+    <color name="nf_red_dark">#00B884</color>
+    <color name="nf_text_primary">#FFFFFF</color>
+    <color name="nf_text_secondary">#B3B3C0</color>
+    <color name="nf_text_muted">#7A7A88</color>
+    <color name="nf_focus_border">#FFFFFF</color>
+    <color name="nf_badge_green">#46D369</color>
+    <color name="nf_scrim_dark">#CC000000</color>
+</resources>

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="28dp"
+    android:height="28dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Pixelated prism icon for top bar -->
+    <path android:fillColor="#00D4FF" android:pathData="M6,3 h12 v2 h-12 z" />
+    <path android:fillColor="#00E5A3" android:pathData="M4,5 h16 v12 h-16 z" />
+    <path android:fillColor="#7C5CFF" android:pathData="M6,17 h12 v2 h-12 z M8,19 h8 v2 h-8 z" />
+    <path android:fillColor="#0B0B0F" android:pathData="M9,8 h2 v8 h-2 z M11,9 h2 v6 h-2 z M13,10 h2 v4 h-2 z M15,11 h2 v2 h-2 z" />
+</vector>

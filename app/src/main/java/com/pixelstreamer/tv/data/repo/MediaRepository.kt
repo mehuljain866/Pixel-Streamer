@@ -1,0 +1,789 @@
+package com.pixelstreamer.tv.data.repo
+
+import android.content.Context
+import com.pixelstreamer.tv.data.model.AlbumSource
+import com.pixelstreamer.tv.data.model.AlbumType
+import com.pixelstreamer.tv.data.model.HomeRow
+import com.pixelstreamer.tv.data.model.MediaItem
+import com.pixelstreamer.tv.data.model.MovieMetadata
+import com.pixelstreamer.tv.data.model.PlaybackProgress
+import com.pixelstreamer.tv.data.model.RowStyle
+import com.pixelstreamer.tv.data.model.ShowGroup
+import com.pixelstreamer.tv.data.model.VideoQuality
+import com.pixelstreamer.tv.data.network.GooglePhotosAlbumScraper
+import com.pixelstreamer.tv.data.network.MovieMetadataResolver
+import com.pixelstreamer.tv.data.network.TvShowBundle
+import com.pixelstreamer.tv.util.TitleCleaner
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.util.TreeMap
+import java.util.UUID
+
+class MediaRepository(
+    private val context: Context,
+    private val scraper: GooglePhotosAlbumScraper,
+    private val metadataResolver: MovieMetadataResolver
+) {
+    private val prefs = context.getSharedPreferences("pixelstreamer_prefs", Context.MODE_PRIVATE)
+    private val cacheFile = File(context.filesDir, "albums_cache_v1.json")
+    private val stateMutex = Mutex()
+
+    private val _albums = MutableStateFlow<List<AlbumSource>>(emptyList())
+    val albums: StateFlow<List<AlbumSource>> = _albums.asStateFlow()
+
+    private val _itemsByAlbum = MutableStateFlow<Map<String, List<MediaItem>>>(emptyMap())
+    val itemsByAlbum: StateFlow<Map<String, List<MediaItem>>> = _itemsByAlbum.asStateFlow()
+
+    private val _progressMap = MutableStateFlow<Map<String, PlaybackProgress>>(emptyMap())
+    val progressMap: StateFlow<Map<String, PlaybackProgress>> = _progressMap.asStateFlow()
+
+    private val _isSyncing = MutableStateFlow(false)
+    val isSyncing: StateFlow<Boolean> = _isSyncing.asStateFlow()
+
+    private val _syncError = MutableStateFlow<String?>(null)
+    val syncError: StateFlow<String?> = _syncError.asStateFlow()
+
+    init {
+        loadFromDisk()
+    }
+
+    var tmdbApiKey: String
+        get() = prefs.getString(KEY_TMDB_API_KEY, "").orEmpty()
+        set(value) {
+            prefs.edit().putString(KEY_TMDB_API_KEY, value.trim()).apply()
+        }
+
+    var defaultQuality: VideoQuality
+        get() {
+            val name = prefs.getString(KEY_DEFAULT_QUALITY, VideoQuality.AUTO.name).orEmpty()
+            return VideoQuality.entries.firstOrNull { it.name == name } ?: VideoQuality.AUTO
+        }
+        set(value) {
+            prefs.edit().putString(KEY_DEFAULT_QUALITY, value.name).apply()
+        }
+
+    var slideshowSeconds: Int
+        get() = prefs.getInt(KEY_SLIDESHOW_SEC, 8).coerceIn(3, 60)
+        set(value) {
+            prefs.edit().putInt(KEY_SLIDESHOW_SEC, value.coerceIn(3, 60)).apply()
+        }
+
+    fun clearError() {
+        _syncError.value = null
+    }
+
+    suspend fun addAndSyncAlbum(
+        url: String,
+        customTitle: String = "",
+        type: AlbumType = AlbumType.AUTO
+    ): Result<AlbumSource> = withContext(Dispatchers.IO) {
+        try {
+            _isSyncing.value = true
+            _syncError.value = null
+            val cleanUrl = scraper.extractUrlFromText(url)
+                ?: return@withContext Result.failure(IllegalArgumentException("Invalid Google Photos link"))
+
+            val albumId = UUID.randomUUID().toString().take(12)
+            val initialSource = AlbumSource(
+                id = albumId,
+                url = cleanUrl,
+                customTitle = customTitle.trim(),
+                type = type,
+                enabled = true
+            )
+            val synced = syncSingleAlbumInternal(initialSource)
+            stateMutex.withLock {
+                val existing = _albums.value.firstOrNull {
+                    it.resolvedUrl == synced.first.resolvedUrl || it.url == cleanUrl
+                }
+                val finalAlbum = if (existing != null) {
+                    synced.first.copy(
+                        id = existing.id,
+                        customTitle = customTitle.trim().ifBlank { existing.customTitle },
+                        type = if (type != AlbumType.AUTO) type else existing.type
+                    )
+                } else {
+                    synced.first
+                }
+                val updatedItems = mergeUserOverrides(
+                    existingItems = _itemsByAlbum.value[finalAlbum.id].orEmpty(),
+                    freshItems = synced.second.map { it.copy(albumId = finalAlbum.id) }
+                )
+                val updatedAlbums = _albums.value.filterNot { it.id == finalAlbum.id } + finalAlbum
+                _albums.value = updatedAlbums
+                _itemsByAlbum.value = _itemsByAlbum.value.toMutableMap().apply {
+                    put(finalAlbum.id, updatedItems)
+                }
+                saveToDisk()
+                Result.success(finalAlbum)
+            }
+        } catch (e: Exception) {
+            _syncError.value = e.message ?: "Failed to sync shared album"
+            Result.failure(e)
+        } finally {
+            _isSyncing.value = false
+        }
+    }
+
+    suspend fun syncAllEnabledAlbums() = withContext(Dispatchers.IO) {
+        val currentAlbums = _albums.value.filter { it.enabled }
+        if (currentAlbums.isEmpty()) return@withContext
+        _isSyncing.value = true
+        _syncError.value = null
+        try {
+            for (album in currentAlbums) {
+                try {
+                    val synced = syncSingleAlbumInternal(album)
+                    stateMutex.withLock {
+                        val merged = mergeUserOverrides(
+                            existingItems = _itemsByAlbum.value[album.id].orEmpty(),
+                            freshItems = synced.second.map { it.copy(albumId = album.id) }
+                        )
+                        _albums.value = _albums.value.map {
+                            if (it.id == album.id) synced.first.copy(itemCount = merged.size) else it
+                        }
+                        _itemsByAlbum.value = _itemsByAlbum.value.toMutableMap().apply {
+                            put(album.id, merged)
+                        }
+                        saveToDisk()
+                    }
+                } catch (e: Exception) {
+                    _syncError.value = "Album '${album.displayTitle}': ${e.message}"
+                }
+            }
+        } finally {
+            _isSyncing.value = false
+        }
+    }
+
+    private suspend fun syncSingleAlbumInternal(album: AlbumSource): Pair<AlbumSource, List<MediaItem>> {
+        val scraped = scraper.fetchAlbum(album.url)
+        val albumDisplayHint = album.customTitle.ifBlank { scraped.albumTitle }
+        val forceShowAlbum = album.type == AlbumType.SHOWS
+        val existingById = _itemsByAlbum.value[album.id].orEmpty().associateBy { it.id }
+
+        // First pass: parse filenames/captions to identify Movies vs TV Episodes
+        val parsedPairs = scraped.items.map { item ->
+            val prev = existingById[item.id]
+            val customTitle = prev?.customTitle.orEmpty()
+            val candidateTitle = customTitle
+                .ifBlank { item.caption }
+                .ifBlank { item.originalFilename }
+            val parsed = if (item.isVideo && candidateTitle.isNotBlank() && album.type != AlbumType.PHOTOS) {
+                TitleCleaner.parse(
+                    rawInput = candidateTitle,
+                    albumTitleHint = albumDisplayHint,
+                    forceShowAlbum = forceShowAlbum
+                )
+            } else {
+                null
+            }
+            Triple(item, prev, parsed)
+        }
+
+        // Fetch TVmaze/TMDB bundle ONCE per unique show series
+        val showBundles = mutableMapOf<String, TvShowBundle?>()
+        val uniqueShowKeys = parsedPairs
+            .mapNotNull { (_, _, p) ->
+                if (p != null && p.isEpisode && p.queryTitle.isNotBlank()) {
+                    TitleCleaner.normalizeSeriesKey(p.queryTitle) to p.queryTitle
+                } else null
+            }
+            .distinctBy { it.first }
+
+        coroutineScope {
+            uniqueShowKeys.map { (key, title) ->
+                async {
+                    showBundles[key] = metadataResolver.resolveShowBundle(title, tmdbApiKey)
+                }
+            }.awaitAll()
+        }
+
+        val shouldLookupMovies = album.type == AlbumType.MOVIES || album.type == AlbumType.AUTO
+        val resolvedItems = coroutineScope {
+            val sem = Semaphore(4)
+            parsedPairs.map { (item, prev, parsed) ->
+                async {
+                    sem.withPermit {
+                        val customTitle = prev?.customTitle.orEmpty()
+                        val hidden = prev?.hidden ?: false
+                        val candidateTitle = customTitle
+                            .ifBlank { item.caption }
+                            .ifBlank { item.originalFilename }
+
+                        if (parsed != null && parsed.isEpisode && album.type != AlbumType.MOVIES) {
+                            val seriesKey = TitleCleaner.normalizeSeriesKey(parsed.queryTitle)
+                            val bundle = showBundles[seriesKey]
+                            val s = parsed.season ?: 1
+                            val e = parsed.episode
+                            val epInfo = if (e != null) bundle?.episodesByKey?.get(s to e) else null
+                            val showMeta = bundle?.showMeta ?: prev?.movieMetadata
+                            val resolvedSeriesName = showMeta?.matchedTitle?.ifBlank { parsed.queryTitle } ?: parsed.queryTitle
+
+                            item.copy(
+                                albumId = album.id,
+                                customTitle = customTitle,
+                                hidden = hidden,
+                                movieMetadata = showMeta,
+                                isEpisode = true,
+                                seriesTitle = resolvedSeriesName,
+                                seasonNumber = s,
+                                episodeNumber = e,
+                                episodeTitle = epInfo?.title?.ifBlank { parsed.episodeTitleHint } ?: parsed.episodeTitleHint,
+                                episodeOverview = epInfo?.overview.orEmpty(),
+                                episodeStillUrl = epInfo?.stillUrl
+                            )
+                        } else {
+                            val shouldMatch = item.isVideo && shouldLookupMovies && candidateTitle.isNotBlank()
+                            val cachedMeta = prev?.movieMetadata
+                            val needsRefresh = cachedMeta == null || cachedMeta.logoUrl.isNullOrBlank()
+                            val metadata = if (shouldMatch && needsRefresh) {
+                                metadataResolver.resolve(
+                                    rawTitle = candidateTitle,
+                                    tmdbKey = tmdbApiKey,
+                                    forceLookup = album.type == AlbumType.MOVIES || customTitle.isNotBlank() || item.caption.isNotBlank()
+                                ) ?: cachedMeta
+                            } else {
+                                cachedMeta
+                            }
+                            item.copy(
+                                albumId = album.id,
+                                customTitle = customTitle,
+                                hidden = hidden,
+                                movieMetadata = metadata,
+                                isEpisode = false
+                            )
+                        }
+                    }
+                }
+            }.awaitAll()
+        }
+
+        val updatedAlbum = album.copy(
+            resolvedUrl = scraped.resolvedUrl,
+            title = scraped.albumTitle,
+            lastSyncedAt = System.currentTimeMillis(),
+            itemCount = resolvedItems.size
+        )
+        return updatedAlbum to resolvedItems
+    }
+
+    private fun mergeUserOverrides(
+        existingItems: List<MediaItem>,
+        freshItems: List<MediaItem>
+    ): List<MediaItem> {
+        val prevMap = existingItems.associateBy { it.id }
+        return freshItems.map { fresh ->
+            val prev = prevMap[fresh.id] ?: return@map fresh
+            fresh.copy(
+                customTitle = prev.customTitle,
+                hidden = prev.hidden,
+                movieMetadata = fresh.movieMetadata ?: prev.movieMetadata
+            )
+        }
+    }
+
+    suspend fun toggleAlbumEnabled(albumId: String, enabled: Boolean) {
+        stateMutex.withLock {
+            _albums.value = _albums.value.map { if (it.id == albumId) it.copy(enabled = enabled) else it }
+            saveToDisk()
+        }
+    }
+
+    suspend fun updateAlbumMeta(albumId: String, customTitle: String, type: AlbumType) {
+        stateMutex.withLock {
+            _albums.value = _albums.value.map {
+                if (it.id == albumId) it.copy(customTitle = customTitle.trim(), type = type) else it
+            }
+            saveToDisk()
+        }
+    }
+
+    suspend fun removeAlbum(albumId: String) {
+        stateMutex.withLock {
+            _albums.value = _albums.value.filterNot { it.id == albumId }
+            _itemsByAlbum.value = _itemsByAlbum.value.toMutableMap().apply { remove(albumId) }
+            saveToDisk()
+        }
+    }
+
+    suspend fun toggleItemHidden(albumId: String, itemId: String, hidden: Boolean) {
+        stateMutex.withLock {
+            val list = _itemsByAlbum.value[albumId].orEmpty().map {
+                if (it.id == itemId) it.copy(hidden = hidden) else it
+            }
+            _itemsByAlbum.value = _itemsByAlbum.value.toMutableMap().apply { put(albumId, list) }
+            saveToDisk()
+        }
+    }
+
+    suspend fun setCustomMovieTitleAndRematch(
+        albumId: String,
+        itemId: String,
+        newTitle: String
+    ): MovieMetadata? {
+        val clean = newTitle.trim()
+        val existing = getItemById(itemId)
+        val parsed = TitleCleaner.parse(clean)
+        val resolved = if (clean.isNotBlank()) {
+            if (existing?.isEpisode == true || parsed.isEpisode) {
+                metadataResolver.resolveShowBundle(parsed.queryTitle, tmdbApiKey)?.showMeta
+                    ?: metadataResolver.resolve(clean, tmdbApiKey, forceLookup = true)
+            } else {
+                metadataResolver.resolve(clean, tmdbApiKey, forceLookup = true)
+            }
+        } else {
+            null
+        }
+        stateMutex.withLock {
+            val list = _itemsByAlbum.value[albumId].orEmpty().map { item ->
+                if (item.id == itemId) {
+                    item.copy(customTitle = clean, movieMetadata = resolved)
+                } else {
+                    item
+                }
+            }
+            _itemsByAlbum.value = _itemsByAlbum.value.toMutableMap().apply { put(albumId, list) }
+            saveToDisk()
+        }
+        return resolved
+    }
+
+    suspend fun savePlaybackProgress(mediaId: String, positionMs: Long, durationMs: Long) {
+        stateMutex.withLock {
+            val updated = _progressMap.value.toMutableMap()
+            updated[mediaId] = PlaybackProgress(
+                mediaId = mediaId,
+                positionMs = positionMs,
+                durationMs = durationMs,
+                updatedAt = System.currentTimeMillis()
+            )
+            _progressMap.value = updated
+            saveToDisk()
+        }
+    }
+
+    fun getItemById(itemId: String): MediaItem? {
+        for (list in _itemsByAlbum.value.values) {
+            list.firstOrNull { it.id == itemId }?.let { return it }
+        }
+        return null
+    }
+
+    fun getAlbumItems(albumId: String, includeHidden: Boolean = false): List<MediaItem> {
+        val list = _itemsByAlbum.value[albumId].orEmpty()
+        return if (includeHidden) list else list.filter { !it.hidden }
+    }
+
+    fun getVisibleItems(): List<MediaItem> {
+        val enabledIds = _albums.value.filter { it.enabled }.map { it.id }.toSet()
+        return _itemsByAlbum.value
+            .filterKeys { it in enabledIds }
+            .values
+            .flatten()
+            .filter { !it.hidden }
+    }
+
+    fun getMovieItems(): List<MediaItem> {
+        return getVisibleItems().filter { it.isVideo && !it.isEpisode }
+    }
+
+    fun getPhotoItems(): List<MediaItem> {
+        return getVisibleItems().filter { !it.isVideo }
+    }
+
+    fun buildShows(): List<ShowGroup> {
+        val progress = _progressMap.value
+        val episodes = getVisibleItems().filter { it.isVideo && it.isEpisode }
+        if (episodes.isEmpty()) return emptyList()
+
+        val grouped = episodes.groupBy {
+            TitleCleaner.normalizeSeriesKey(it.seriesDisplayTitle).ifBlank { it.albumId }
+        }
+
+        return grouped.map { (key, eps) ->
+            val sorted = eps.sortedWith(
+                compareBy<MediaItem>(
+                    { it.seasonNumber ?: 1 },
+                    { it.episodeNumber ?: Int.MAX_VALUE },
+                    { it.episodeRowLabel }
+                )
+            )
+            val seasons = TreeMap<Int, List<MediaItem>>()
+            sorted.groupBy { it.seasonNumber ?: 1 }.forEach { (sNum, sList) ->
+                seasons[sNum] = sList
+            }
+
+            // Pick Next Up chronologically: most recently in-progress, else episode right after last finished, else S01E01
+            val inProgress = sorted
+                .filter { progress[it.id]?.isInProgress == true }
+                .maxByOrNull { progress[it.id]?.updatedAt ?: 0L }
+            val nextUp = inProgress ?: run {
+                val lastFinishedIdx = sorted.indexOfLast { progress[it.id]?.isFinished == true }
+                if (lastFinishedIdx >= 0 && lastFinishedIdx + 1 < sorted.size) {
+                    sorted[lastFinishedIdx + 1]
+                } else {
+                    sorted.first()
+                }
+            }
+
+            val rep = sorted.firstOrNull { it.movieMetadata != null } ?: sorted.first()
+            val meta = rep.movieMetadata
+            ShowGroup(
+                seriesKey = key,
+                title = meta?.matchedTitle?.ifBlank { rep.seriesDisplayTitle } ?: rep.seriesDisplayTitle,
+                posterUrl = meta?.posterUrl ?: rep.thumbnailUrl(600, 900),
+                backdropUrl = meta?.backdropUrl ?: nextUp.backdropImageUrl,
+                logoUrl = meta?.logoUrl,
+                overview = meta?.overview?.takeIf { it.isNotBlank() }
+                    ?: "${seasons.size} Season${if (seasons.size == 1) "" else "s"} · ${sorted.size} Episodes",
+                year = meta?.year,
+                rating = meta?.rating,
+                genres = meta?.genres ?: emptyList(),
+                seasons = seasons,
+                allEpisodesChronological = sorted,
+                nextUpEpisode = nextUp
+            )
+        }.sortedBy { it.title.lowercase() }
+    }
+
+    fun getShowByKey(seriesKey: String): ShowGroup? {
+        return buildShows().firstOrNull { it.seriesKey == seriesKey }
+    }
+
+    fun searchLibrary(rawQuery: String): Pair<List<ShowGroup>, List<MediaItem>> {
+        val q = rawQuery.trim().lowercase()
+        if (q.isBlank()) return emptyList<ShowGroup>() to emptyList()
+        val matchingShows = buildShows().filter { show ->
+            show.title.lowercase().contains(q) ||
+                show.genres.any { it.lowercase().contains(q) } ||
+                show.allEpisodesChronological.any { ep ->
+                    ep.episodeTitle.lowercase().contains(q) || ep.episodeCode.lowercase().contains(q)
+                }
+        }
+        val matchingMedia = getVisibleItems().filter { item ->
+            !item.isEpisode && (
+                item.displayTitle.lowercase().contains(q) ||
+                    item.originalFilename.lowercase().contains(q) ||
+                    item.caption.lowercase().contains(q) ||
+                    item.movieMetadata?.genres?.any { it.lowercase().contains(q) } == true ||
+                    item.movieMetadata?.cast?.any { it.lowercase().contains(q) } == true
+                )
+        }
+        return matchingShows to matchingMedia
+    }
+
+    fun getNextChronologicalVideo(item: MediaItem): MediaItem? {
+        if (item.isEpisode) {
+            val key = TitleCleaner.normalizeSeriesKey(item.seriesDisplayTitle).ifBlank { item.albumId }
+            val eps = getShowByKey(key)?.allEpisodesChronological.orEmpty()
+            val idx = eps.indexOfFirst { it.id == item.id }
+            return if (idx >= 0 && idx + 1 < eps.size) eps[idx + 1] else null
+        }
+        val movies = getAlbumItems(item.albumId).filter { it.isVideo && !it.isEpisode }
+        val idx = movies.indexOfFirst { it.id == item.id }
+        return if (idx >= 0 && idx + 1 < movies.size) movies[idx + 1] else null
+    }
+
+    fun buildHomeRows(): List<HomeRow> {
+        val progress = _progressMap.value
+        val rows = mutableListOf<HomeRow>()
+
+        val allVideos = getVisibleItems().filter { it.isVideo }
+        val inProgressVideos = allVideos
+            .filter { progress[it.id]?.isInProgress == true }
+            .sortedByDescending { progress[it.id]?.updatedAt ?: 0L }
+
+        if (inProgressVideos.isNotEmpty()) {
+            // Keep at most 1 active episode per show in Continue Watching
+            val seenShows = mutableSetOf<String>()
+            val deduped = inProgressVideos.filter { item ->
+                if (!item.isEpisode) true
+                else seenShows.add(TitleCleaner.normalizeSeriesKey(item.seriesDisplayTitle))
+            }
+            rows.add(
+                HomeRow(
+                    id = "continue_watching",
+                    title = "Continue Watching",
+                    subtitle = "${deduped.size} active",
+                    rowStyle = RowStyle.CONTINUE_WATCHING,
+                    items = deduped
+                )
+            )
+        }
+
+        val shows = buildShows()
+        if (shows.isNotEmpty()) {
+            rows.add(
+                HomeRow(
+                    id = "tv_shows",
+                    title = "TV Shows",
+                    subtitle = "${shows.size} series",
+                    rowStyle = RowStyle.SHOWS_POSTER,
+                    shows = shows
+                )
+            )
+        }
+
+        val movies = getMovieItems()
+        if (movies.isNotEmpty()) {
+            rows.add(
+                HomeRow(
+                    id = "movies",
+                    title = "Movies",
+                    subtitle = "${movies.size} title${if (movies.size == 1) "" else "s"}",
+                    rowStyle = RowStyle.MOVIES_POSTER,
+                    items = movies
+                )
+            )
+        }
+
+        val photos = getPhotoItems()
+        if (photos.isNotEmpty()) {
+            rows.add(
+                HomeRow(
+                    id = "photos",
+                    title = "Photos",
+                    subtitle = "${photos.size} photo${if (photos.size == 1) "" else "s"}",
+                    rowStyle = RowStyle.PHOTOS_LANDSCAPE,
+                    items = photos
+                )
+            )
+        }
+
+        return rows
+    }
+
+    suspend fun resolveFreshPlaybackUrl(item: MediaItem, quality: VideoQuality): String {
+        return scraper.resolveFreshStreamUrl(item, quality)
+    }
+
+    private fun saveToDisk() {
+        try {
+            val root = JSONObject()
+            val albumsArr = JSONArray()
+            for (a in _albums.value) {
+                albumsArr.put(
+                    JSONObject().apply {
+                        put("id", a.id)
+                        put("url", a.url)
+                        put("resolvedUrl", a.resolvedUrl)
+                        put("title", a.title)
+                        put("customTitle", a.customTitle)
+                        put("type", a.type.name)
+                        put("enabled", a.enabled)
+                        put("lastSyncedAt", a.lastSyncedAt)
+                        put("itemCount", a.itemCount)
+                    }
+                )
+            }
+            root.put("albums", albumsArr)
+
+            val itemsObj = JSONObject()
+            for ((albId, list) in _itemsByAlbum.value) {
+                val arr = JSONArray()
+                for (item in list) {
+                    arr.put(itemToJson(item))
+                }
+                itemsObj.put(albId, arr)
+            }
+            root.put("itemsByAlbum", itemsObj)
+
+            val progArr = JSONArray()
+            for (p in _progressMap.value.values) {
+                progArr.put(
+                    JSONObject().apply {
+                        put("mediaId", p.mediaId)
+                        put("positionMs", p.positionMs)
+                        put("durationMs", p.durationMs)
+                        put("updatedAt", p.updatedAt)
+                    }
+                )
+            }
+            root.put("progress", progArr)
+
+            cacheFile.writeText(root.toString())
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun loadFromDisk() {
+        if (!cacheFile.exists()) return
+        try {
+            val root = JSONObject(cacheFile.readText())
+            val albumsArr = root.optJSONArray("albums") ?: JSONArray()
+            val loadedAlbums = mutableListOf<AlbumSource>()
+            for (i in 0 until albumsArr.length()) {
+                val o = albumsArr.optJSONObject(i) ?: continue
+                val type = AlbumType.entries.firstOrNull { it.name == o.optString("type") } ?: AlbumType.AUTO
+                loadedAlbums.add(
+                    AlbumSource(
+                        id = o.optString("id"),
+                        url = o.optString("url"),
+                        resolvedUrl = o.optString("resolvedUrl"),
+                        title = o.optString("title"),
+                        customTitle = o.optString("customTitle"),
+                        type = type,
+                        enabled = o.optBoolean("enabled", true),
+                        lastSyncedAt = o.optLong("lastSyncedAt", 0L),
+                        itemCount = o.optInt("itemCount", 0)
+                    )
+                )
+            }
+            _albums.value = loadedAlbums
+
+            val itemsObj = root.optJSONObject("itemsByAlbum") ?: JSONObject()
+            val loadedItems = mutableMapOf<String, List<MediaItem>>()
+            for (key in itemsObj.keys()) {
+                val arr = itemsObj.optJSONArray(key) ?: continue
+                val list = mutableListOf<MediaItem>()
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    jsonToItem(o)?.let { list.add(it) }
+                }
+                loadedItems[key] = list
+            }
+            _itemsByAlbum.value = loadedItems
+
+            val progArr = root.optJSONArray("progress") ?: JSONArray()
+            val loadedProg = mutableMapOf<String, PlaybackProgress>()
+            for (i in 0 until progArr.length()) {
+                val o = progArr.optJSONObject(i) ?: continue
+                val id = o.optString("mediaId")
+                if (id.isNotBlank()) {
+                    loadedProg[id] = PlaybackProgress(
+                        mediaId = id,
+                        positionMs = o.optLong("positionMs", 0L),
+                        durationMs = o.optLong("durationMs", 0L),
+                        updatedAt = o.optLong("updatedAt", 0L)
+                    )
+                }
+            }
+            _progressMap.value = loadedProg
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun itemToJson(item: MediaItem): JSONObject {
+        val obj = JSONObject().apply {
+            put("id", item.id)
+            put("albumId", item.albumId)
+            put("albumShareId", item.albumShareId)
+            put("albumKey", item.albumKey)
+            put("baseUrl", item.baseUrl)
+            put("width", item.width)
+            put("height", item.height)
+            put("timestampMs", item.timestampMs)
+            put("isVideo", item.isVideo)
+            put("durationMs", item.durationMs)
+            put("originalFilename", item.originalFilename)
+            put("caption", item.caption)
+            put("customTitle", item.customTitle)
+            put("fileSizeBytes", item.fileSizeBytes)
+            put("hidden", item.hidden)
+            put("availableItags", JSONArray(item.availableItags))
+            put("isEpisode", item.isEpisode)
+            put("seriesTitle", item.seriesTitle)
+            put("seasonNumber", item.seasonNumber ?: JSONObject.NULL)
+            put("episodeNumber", item.episodeNumber ?: JSONObject.NULL)
+            put("episodeTitle", item.episodeTitle)
+            put("episodeOverview", item.episodeOverview)
+            put("episodeStillUrl", item.episodeStillUrl ?: JSONObject.NULL)
+        }
+        item.movieMetadata?.let { m ->
+            obj.put("movieMetadata", JSONObject().apply {
+                put("matchedTitle", m.matchedTitle)
+                put("year", m.year ?: JSONObject.NULL)
+                put("overview", m.overview)
+                put("posterUrl", m.posterUrl ?: JSONObject.NULL)
+                put("backdropUrl", m.backdropUrl ?: JSONObject.NULL)
+                put("logoUrl", m.logoUrl ?: JSONObject.NULL)
+                put("genres", JSONArray(m.genres))
+                put("rating", m.rating ?: JSONObject.NULL)
+                put("contentRating", m.contentRating)
+                put("runtimeMinutes", m.runtimeMinutes ?: JSONObject.NULL)
+                put("director", m.director)
+                put("cast", JSONArray(m.cast))
+                put("tagline", m.tagline)
+                put("source", m.source)
+            })
+        }
+        return obj
+    }
+
+    private fun jsonToItem(o: JSONObject): MediaItem? {
+        val id = o.optString("id").takeIf { it.isNotBlank() } ?: return null
+        val itagArr = o.optJSONArray("availableItags") ?: JSONArray()
+        val itags = (0 until itagArr.length()).map { itagArr.optInt(it) }.filter { it > 0 }
+
+        val mObj = o.optJSONObject("movieMetadata")
+        val meta = mObj?.let { m ->
+            MovieMetadata(
+                matchedTitle = m.optString("matchedTitle"),
+                year = if (m.isNull("year")) null else m.optInt("year"),
+                overview = m.optString("overview"),
+                posterUrl = if (m.isNull("posterUrl")) null else m.optString("posterUrl").takeIf { it.isNotBlank() },
+                backdropUrl = if (m.isNull("backdropUrl")) null else m.optString("backdropUrl").takeIf { it.isNotBlank() },
+                logoUrl = if (m.isNull("logoUrl")) null else m.optString("logoUrl").takeIf { it.isNotBlank() },
+                genres = (m.optJSONArray("genres") ?: JSONArray()).let { ga ->
+                    (0 until ga.length()).mapNotNull { ga.optString(it).takeIf { s -> s.isNotBlank() } }
+                },
+                rating = if (m.isNull("rating")) null else m.optDouble("rating"),
+                contentRating = m.optString("contentRating"),
+                runtimeMinutes = if (m.isNull("runtimeMinutes")) null else m.optInt("runtimeMinutes"),
+                director = m.optString("director"),
+                cast = (m.optJSONArray("cast") ?: JSONArray()).let { ca ->
+                    (0 until ca.length()).mapNotNull { ca.optString(it).takeIf { s -> s.isNotBlank() } }
+                },
+                tagline = m.optString("tagline"),
+                source = m.optString("source")
+            )
+        }
+
+        return MediaItem(
+            id = id,
+            albumId = o.optString("albumId"),
+            albumShareId = o.optString("albumShareId"),
+            albumKey = o.optString("albumKey"),
+            baseUrl = o.optString("baseUrl"),
+            width = o.optInt("width", 1920),
+            height = o.optInt("height", 1080),
+            timestampMs = o.optLong("timestampMs", 0L),
+            isVideo = o.optBoolean("isVideo", false),
+            durationMs = o.optLong("durationMs", 0L),
+            originalFilename = o.optString("originalFilename"),
+            caption = o.optString("caption"),
+            customTitle = o.optString("customTitle"),
+            availableItags = itags,
+            fileSizeBytes = o.optLong("fileSizeBytes", 0L),
+            hidden = o.optBoolean("hidden", false),
+            movieMetadata = meta,
+            isEpisode = o.optBoolean("isEpisode", false),
+            seriesTitle = o.optString("seriesTitle"),
+            seasonNumber = if (o.isNull("seasonNumber")) null else o.optInt("seasonNumber"),
+            episodeNumber = if (o.isNull("episodeNumber")) null else o.optInt("episodeNumber"),
+            episodeTitle = o.optString("episodeTitle"),
+            episodeOverview = o.optString("episodeOverview"),
+            episodeStillUrl = if (o.isNull("episodeStillUrl")) null else o.optString("episodeStillUrl").takeIf { it.isNotBlank() }
+        )
+    }
+
+    companion object {
+        private const val KEY_TMDB_API_KEY = "tmdb_api_key"
+        private const val KEY_DEFAULT_QUALITY = "default_quality"
+        private const val KEY_SLIDESHOW_SEC = "slideshow_seconds"
+    }
+}

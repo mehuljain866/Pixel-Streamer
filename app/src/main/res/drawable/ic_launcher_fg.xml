@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Pixel-art stepped cinema prism block -->
+    <path android:fillColor="#00D4FF" android:pathData="M34,26 h40 v6 h-40 z" />
+    <path android:fillColor="#00E5A3" android:pathData="M28,32 h52 v6 h-52 z M22,38 h64 v32 h-64 z" />
+    <path android:fillColor="#7C5CFF" android:pathData="M28,70 h52 v6 h-52 z M34,76 h40 v6 h-40 z" />
+    <!-- Crisp pixel play triangle inside -->
+    <path android:fillColor="#FFFFFF" android:pathData="M43,43 h6 v22 h-6 z M49,46 h6 v16 h-6 z M55,49 h6 v10 h-6 z M61,52 h5 v4 h-5 z" />
+</vector>
