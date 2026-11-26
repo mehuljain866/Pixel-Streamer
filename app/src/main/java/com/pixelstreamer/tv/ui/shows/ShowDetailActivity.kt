@@ -97,6 +97,7 @@ class ShowDetailActivity : AppCompatActivity() {
             val startMs = if (nextProg != null && nextProg.isInProgress) nextProg.positionMs else 0L
             playEpisode(nextEp, startMs)
         }
+        lifecycleScope.launch { repo.preIndexSingleItem(nextEp) }
 
         binding.btnShowFix.setOnClickListener {
             showFixTitleDialog(show)

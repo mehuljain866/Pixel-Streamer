@@ -30,6 +30,7 @@ import com.pixelstreamer.tv.R
 import com.pixelstreamer.tv.data.model.MediaItem
 import com.pixelstreamer.tv.data.model.VideoQuality
 import com.pixelstreamer.tv.data.network.GooglePhotosAlbumScraper
+import com.pixelstreamer.tv.data.network.StreamPreIndexer
 import com.pixelstreamer.tv.databinding.ActivityPlayerBinding
 import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit
@@ -402,11 +403,10 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun initPlayerAndStart(item: MediaItem, startPositionMs: Long) {
-        val dataSourceFactory = OkHttpDataSource.Factory(app.httpClient)
-            .setUserAgent(GooglePhotosAlbumScraper.DESKTOP_UA)
+        val dataSourceFactory = app.preIndexer.buildCacheDataSourceFactory()
 
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(15_000, 45_000, 1_200, 2_200)
+            .setBufferDurationsMs(15_000, 45_000, 300, 1_000)
             .build()
 
         val exo = ExoPlayer.Builder(this)
@@ -513,7 +513,11 @@ class PlayerActivity : AppCompatActivity() {
                 val qualityToUse = if (forceOriginal) VideoQuality.ORIGINAL else currentQuality
                 val streamUrl = repo.resolveFreshPlaybackUrl(item, qualityToUse)
                 val exo = player ?: return@launch
-                exo.setMediaItem(ExoMediaItem.fromUri(streamUrl), startPositionMs)
+                val exoItem = ExoMediaItem.Builder()
+                    .setUri(streamUrl)
+                    .setCustomCacheKey(StreamPreIndexer.cacheKeyFor(item, qualityToUse))
+                    .build()
+                exo.setMediaItem(exoItem, startPositionMs)
                 exo.setPlaybackSpeed(playbackSpeed)
                 exo.prepare()
                 exo.playWhenReady = true

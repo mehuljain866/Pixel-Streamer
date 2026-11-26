@@ -8,6 +8,7 @@ import coil.memory.MemoryCache
 import com.pixelstreamer.tv.data.network.GooglePhotosAlbumScraper
 import com.pixelstreamer.tv.data.network.MovieMetadataResolver
 import com.pixelstreamer.tv.data.network.ResilientGoogleDns
+import com.pixelstreamer.tv.data.network.StreamPreIndexer
 import com.pixelstreamer.tv.data.repo.MediaRepository
 import com.pixelstreamer.tv.server.CompanionWebServer
 import okhttp3.OkHttpClient
@@ -36,8 +37,12 @@ class PixelStreamerApp : Application(), ImageLoaderFactory {
         MovieMetadataResolver(httpClient)
     }
 
+    val preIndexer: StreamPreIndexer by lazy {
+        StreamPreIndexer(this, httpClient)
+    }
+
     val repository: MediaRepository by lazy {
-        MediaRepository(this, scraper, metadataResolver)
+        MediaRepository(this, scraper, metadataResolver, preIndexer)
     }
 
     private val companionServer by lazy { CompanionWebServer(repository) }

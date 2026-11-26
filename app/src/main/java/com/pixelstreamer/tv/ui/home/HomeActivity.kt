@@ -58,7 +58,9 @@ class HomeActivity : AppCompatActivity() {
         handleIncomingDeepLink(intent)
 
         lifecycleScope.launch {
+            repo.preIndexContinueWatchingAndHero()
             repo.syncAllEnabledAlbums()
+            repo.preIndexContinueWatchingAndHero()
         }
     }
 

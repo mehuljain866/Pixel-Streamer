@@ -49,6 +49,7 @@ class DetailActivity : AppCompatActivity() {
         render(item)
         setupButtons()
         binding.btnDetailPlay.requestFocus()
+        lifecycleScope.launch { repo.preIndexSingleItem(item, selectedQuality) }
     }
 
     override fun onResume() {
@@ -73,6 +74,7 @@ class DetailActivity : AppCompatActivity() {
             val nextIdx = (all.indexOf(selectedQuality) + 1) % all.size
             selectedQuality = all[nextIdx]
             binding.btnDetailQuality.text = "Quality: ${selectedQuality.label}"
+            lifecycleScope.launch { repo.preIndexSingleItem(cur, selectedQuality) }
         }
 
         binding.btnDetailEpisodes.setOnClickListener {

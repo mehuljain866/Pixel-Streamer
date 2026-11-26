@@ -30,6 +30,12 @@ data class ItemDetailResult(
     val streamUrlsByItag: Map<Int, String> = emptyMap()
 )
 
+data class ResolvedStreamInfo(
+    val url: String,
+    val totalBytes: Long = -1L,
+    val rangeSupported: Boolean = false
+)
+
 class GooglePhotosAlbumScraper(private val httpClient: OkHttpClient) {
 
     suspend fun fetchAlbum(rawInputUrl: String): ScrapedAlbumResult = withContext(Dispatchers.IO) {
@@ -204,26 +210,31 @@ class GooglePhotosAlbumScraper(private val httpClient: OkHttpClient) {
     }
 
     /**
-     * Resolves a fresh playable high-definition MP4 URL right before playback so CDN tokens never go stale.
+     * Resolves a fresh playable high-definition MP4 URL and its byte-range metadata.
+     * For AUTO / ORIGINAL, checks the range-seekable original file (=dv) first to skip
+     * unnecessary full-page HTML scraping before playback begins.
      */
-    suspend fun resolveFreshStreamUrl(
+    suspend fun resolveFreshStreamInfo(
         item: MediaItem,
         preferredQuality: VideoQuality
-    ): String = withContext(Dispatchers.IO) {
+    ): ResolvedStreamInfo = withContext(Dispatchers.IO) {
         val dvUrl = "${item.baseUrl}=dv"
         if (preferredQuality == VideoQuality.ORIGINAL) {
-            return@withContext dvUrl
+            return@withContext probeStreamInfo(dvUrl)
+                ?: ResolvedStreamInfo(url = dvUrl, totalBytes = item.fileSizeBytes, rangeSupported = true)
+        }
+
+        // Fast path for AUTO: probe =dv immediately without waiting on /photo/ HTML fetch.
+        if (preferredQuality == VideoQuality.AUTO) {
+            val dvInfo = probeStreamInfo(dvUrl)
+            if (dvInfo != null && dvInfo.rangeSupported) {
+                return@withContext dvInfo
+            }
         }
 
         val detail = fetchItemDetail(item.albumShareId, item.albumKey, item.id)
         val available = detail?.availableItags?.takeIf { it.isNotEmpty() } ?: item.availableItags
         val signedUrls = detail?.streamUrlsByItag.orEmpty()
-
-        // For AUTO, prefer untouched Original (=dv) whenever the CDN supports HTTP 206 Range seeking
-        // so 1080p/720p movies never suffer Google Photos' 240p/360p proxy compression.
-        if (preferredQuality == VideoQuality.AUTO && probeRangeSeekable(dvUrl)) {
-            return@withContext dvUrl
-        }
 
         val candidates = buildCandidateUrls(
             item = item,
@@ -232,12 +243,18 @@ class GooglePhotosAlbumScraper(private val httpClient: OkHttpClient) {
             preferred = preferredQuality
         )
         for (candidate in candidates) {
-            if (probeStreamUrl(candidate)) {
-                return@withContext candidate
+            val probed = probeStreamInfo(candidate)
+            if (probed != null) {
+                return@withContext probed
             }
         }
-        dvUrl
+        ResolvedStreamInfo(url = dvUrl, totalBytes = item.fileSizeBytes, rangeSupported = true)
     }
+
+    suspend fun resolveFreshStreamUrl(
+        item: MediaItem,
+        preferredQuality: VideoQuality
+    ): String = resolveFreshStreamInfo(item, preferredQuality).url
 
     private fun buildCandidateUrls(
         item: MediaItem,
@@ -291,7 +308,7 @@ class GooglePhotosAlbumScraper(private val httpClient: OkHttpClient) {
         return out.distinct()
     }
 
-    private fun probeRangeSeekable(url: String): Boolean {
+    private fun probeStreamInfo(url: String): ResolvedStreamInfo? {
         return try {
             val req = Request.Builder()
                 .url(url)
@@ -299,26 +316,24 @@ class GooglePhotosAlbumScraper(private val httpClient: OkHttpClient) {
                 .header("Range", "bytes=0-1023")
                 .build()
             httpClient.newCall(req).execute().use { resp ->
-                resp.code == 206 ||
-                    (resp.code == 200 && resp.header("Accept-Ranges").equals("bytes", ignoreCase = true))
+                if (resp.code != 200 && resp.code != 206) return null
+                val finalUrl = resp.request.url.toString()
+                val rangeSupported = resp.code == 206 ||
+                    resp.header("Accept-Ranges").equals("bytes", ignoreCase = true)
+                val totalBytes = if (resp.code == 206) {
+                    val cr = resp.header("Content-Range").orEmpty()
+                    Regex("""bytes\s+\d+-\d+/(\d+)""").find(cr)?.groupValues?.get(1)?.toLongOrNull() ?: -1L
+                } else {
+                    resp.header("Content-Length")?.toLongOrNull() ?: -1L
+                }
+                ResolvedStreamInfo(
+                    url = finalUrl,
+                    totalBytes = totalBytes,
+                    rangeSupported = rangeSupported
+                )
             }
         } catch (_: Exception) {
-            false
-        }
-    }
-
-    private fun probeStreamUrl(url: String): Boolean {
-        return try {
-            val req = Request.Builder()
-                .url(url)
-                .header("User-Agent", DESKTOP_UA)
-                .header("Range", "bytes=0-1023")
-                .build()
-            httpClient.newCall(req).execute().use { resp ->
-                resp.code == 200 || resp.code == 206
-            }
-        } catch (_: Exception) {
-            false
+            null
         }
     }
 

@@ -12,6 +12,7 @@ import com.pixelstreamer.tv.data.model.ShowGroup
 import com.pixelstreamer.tv.data.model.VideoQuality
 import com.pixelstreamer.tv.data.network.GooglePhotosAlbumScraper
 import com.pixelstreamer.tv.data.network.MovieMetadataResolver
+import com.pixelstreamer.tv.data.network.StreamPreIndexer
 import com.pixelstreamer.tv.data.network.TvShowBundle
 import com.pixelstreamer.tv.util.TitleCleaner
 import kotlinx.coroutines.Dispatchers
@@ -35,7 +36,8 @@ import java.util.UUID
 class MediaRepository(
     private val context: Context,
     private val scraper: GooglePhotosAlbumScraper,
-    private val metadataResolver: MovieMetadataResolver
+    private val metadataResolver: MovieMetadataResolver,
+    private val preIndexer: StreamPreIndexer? = null
 ) {
     private val prefs = context.getSharedPreferences("pixelstreamer_prefs", Context.MODE_PRIVATE)
     private val cacheFile = File(context.filesDir, "albums_cache_v1.json")
@@ -568,7 +570,64 @@ class MediaRepository(
     }
 
     suspend fun resolveFreshPlaybackUrl(item: MediaItem, quality: VideoQuality): String {
+        val indexer = preIndexer
+        if (indexer != null) {
+            return indexer.getOrResolveStreamInfo(item, quality, scraper).url
+        }
         return scraper.resolveFreshStreamUrl(item, quality)
+    }
+
+    /**
+     * Immediately refreshes CDN links and pre-indexes byte headers/tail moov/resume offsets
+     * for active Continue Watching items (plus the top featured item) on app launch.
+     */
+    suspend fun preIndexContinueWatchingAndHero() = withContext(Dispatchers.IO) {
+        val indexer = preIndexer ?: return@withContext
+        val progress = _progressMap.value
+        val visibleVideos = getVisibleItems().filter { it.isVideo }
+        if (visibleVideos.isEmpty()) return@withContext
+
+        val inProgress = visibleVideos
+            .filter { progress[it.id]?.isInProgress == true }
+            .sortedByDescending { progress[it.id]?.updatedAt ?: 0L }
+
+        val targets = mutableListOf<Pair<MediaItem, Long>>()
+        val seenIds = mutableSetOf<String>()
+        for (item in inProgress) {
+            if (targets.size >= 3) break
+            if (seenIds.add(item.id)) {
+                targets.add(item to (progress[item.id]?.positionMs ?: 0L))
+            }
+        }
+        if (targets.size < 3) {
+            for (item in visibleVideos) {
+                if (targets.size >= 3) break
+                if (seenIds.add(item.id)) {
+                    targets.add(item to 0L)
+                }
+            }
+        }
+
+        coroutineScope {
+            targets.map { (item, posMs) ->
+                async {
+                    val q = item.normalizeQuality(defaultQuality)
+                    indexer.preIndexItem(item, q, posMs, scraper)
+                }
+            }.awaitAll()
+        }
+    }
+
+    suspend fun preIndexSingleItem(
+        item: MediaItem,
+        quality: VideoQuality = defaultQuality,
+        resumePosMs: Long? = null
+    ) {
+        val indexer = preIndexer ?: return
+        val prog = _progressMap.value[item.id]
+        val pos = resumePosMs ?: if (prog != null && prog.isInProgress) prog.positionMs else 0L
+        val normalized = item.normalizeQuality(quality)
+        indexer.preIndexItem(item, normalized, pos, scraper)
     }
 
     private fun saveToDisk() {
