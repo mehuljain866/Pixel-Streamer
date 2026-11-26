@@ -4,53 +4,60 @@ Android TV (`com.pixelstreamer.tv`) and Android Tablet (`com.pixelstreamer.table
 
 ## How it works
 
-1. Open the app on Android TV and scan the on-screen QR code with a phone on the same Wi-Fi network, or open `http://<TV-IP>:8765` in a browser.
+1. Open the app on Android TV or Tablet and scan the on-screen QR code with a phone on the same Wi-Fi network, or open `http://<DEVICE-IP>:8765` in a browser and enter the 4-digit pairing PIN shown on screen.
 2. Paste one or more Google Photos shared album links (`https://photos.app.goo.gl/...` or `https://photos.google.com/share/...`). A DNS-over-HTTPS resolver (`8.8.8.8/resolve`) handles `photos.app.goo.gl` redirects when local ISP DNS blocks shortlinks.
-3. For videos, the scraper reads `Content-Disposition` filenames via `HEAD =dv`, cleans release tags, groups episodes chronologically by season and episode number (`S01E01`, `1x01`), and fetches posters, transparent PNG title logos, ratings, and descriptions from IMDb, Cinemeta/Metahub, TVmaze, iTunes, Wikipedia, or an optional TMDB key.
+3. Parsed video and photo items appear right away, while posters, transparent PNG title logos, ratings, and descriptions load in the background. For videos, the scraper reads `Content-Disposition` filenames via `HEAD =dv`, cleans release tags, groups episodes chronologically by season and episode number (`S01E01`, `1x01`), and queries IMDb, Cinemeta/Metahub, TVmaze, iTunes, Wikipedia, or an optional TMDB key.
 
 ## Library views and companion app
 
-The **Home** screen combines the featured backdrop/title-logo hero with horizontal shelves for **Continue Watching**, **TV Shows**, **Movies**, and **Photos**. The **Movies** and **Shows** tabs switch to dedicated grids sorted A-Z or by album order, and the top-bar search button filters across titles, filenames, episodes, genres, and cast.
+The Home screen shows the featured backdrop/title-logo hero above shelves for Continue Watching, TV Shows, Movies, and Photos. The Movies and Shows tabs open grids sorted A-Z or by album order, and top-bar search filters across titles, filenames, episodes, genres, and cast.
 
-Episodes detected in a folder (or albums marked as Shows) are grouped by series and season so playback picks up from the next unfinished episode. The **Photos** tab opens a full-screen gallery with D-pad navigation and an adjustable slideshow timer.
+Episodes detected in an album (or albums marked as Shows) group under one series card so playback resumes from the next unfinished episode. The Photos tab opens a full-screen viewer with D-pad navigation, touch swiping on Tablet, and an adjustable slideshow timer.
 
-To manage albums from a phone, open the built-in companion web page on port `8765`. From there you can add or remove shared links, hide files, search the library, manually re-match title artwork, and set the default quality.
+From the companion web page on port `8765` (protected by the session PIN and `HttpOnly` cookie), you can:
+
+- Add, sync, enable, or remove shared album links.
+- Hide or unhide individual items (or bulk show/hide inside the device Manage Albums screen).
+- Search the library, pick a default quality, or set a custom title on a movie or TV series so artwork updates across all matching episodes.
 
 ## Player controls
 
 Built on AndroidX Media3 (`ExoPlayer` + `OkHttpDataSource`):
 
-- `Up`: Show the timeline bar without pausing.
-- `Down`: Hide the timeline bar immediately while playing.
-- `Left` / `Right`: Scrub forward or back (`10s` per tap, accelerating to `30s` and `60s` while held).
-- `Center` / `Play/Pause`: Toggle playback from either full screen or the timeline bar. Pausing displays the title logo and synopsis.
-- `Settings` gear (or `Menu`): Open quality, playback speed (`0.75x` to `2x`), and screen fit (`Fit` / `Fill`) options. Quality choices are filtered to each video's resolution (`720p` files omit `1080p`).
-- Touch gestures (Tablet): Single-tap the video to toggle the timeline bar or resume playback, double-tap left or right to jump `10s`, swipe horizontally in Photo Viewer to change photos, and use the top-left Back buttons.
+- `Up` / `Down`: Show or hide the timeline bar while playing.
+- `Left` / `Right`: Seek forward or back (`10s` per tap, accelerating to `30s` and `60s` while held).
+- `Center` or `Play/Pause`: Toggle playback from full screen or the timeline bar. Pausing displays the title logo and synopsis.
+- `Settings` gear (or `Menu`): Change quality, playback speed (`0.75x` to `2x`), and screen fit (`Fit` / `Fill`). Quality choices are filtered per file so `720p` streams omit `1080p`.
+- Tablet touch gestures: Single-tap the video to show or hide the overlay and toggle playback, double-tap left or right to jump `10s`, swipe sideways in the photo viewer, and use the on-screen back buttons.
 
-When quality is set to `Auto`, the player probes the `=dv` original stream for HTTP `206` range-seek support first so source `1080p` and `720p` uploads play directly, falling back to signed `video-downloads.googleusercontent.com` URLs or `=m37`/`=m22`/`=m18` variants when needed.
+On `Auto` quality, playback checks the `=dv` original file for HTTP `206` range-seek support first so source `1080p` and `720p` uploads play directly, falling back to `video-downloads.googleusercontent.com` URLs or `=m37`, `=m22`, and `=m18` variants when needed.
 
-## Install on Android TV
+## Install
 
-### Wi-Fi download
+Download `PixelStreamer-tv-v1.0.4.apk` (Android TV) or `PixelStreamer-tablet-v1.0.4.apk` (Android Tablet) from the [GitHub Releases](https://github.com/mehuljain866/Pixel-Streamer/releases) page, or sideload local builds over Wi-Fi or ADB.
 
-Run the local APK server from the repo root on the same network as the TV:
+### Wi-Fi download from local builds
+
+Place built APKs in `dist/` (ignored by git) and run the helper HTTP server on the same network:
 
 ```powershell
 python serve_apk.py
 ```
 
-Open the printed URL (for example `http://<pc-ip>:8088/PixelStreamer-tv-v1.0.0.apk`) in **Downloader** or a TV browser and confirm the install prompt.
+Open the printed URL (for example `http://<pc-ip>:8088/PixelStreamer-tv-v1.0.4.apk`) in Downloader or a browser on the device and confirm the install prompt.
 
 ### ADB
 
 ```powershell
-adb connect <TV_IP>:5555
-adb install -r dist\PixelStreamer-tv-v1.0.0.apk
+adb connect <DEVICE_IP>:5555
+adb install -r dist\PixelStreamer-tv-v1.0.4.apk
 ```
+
+For tablets, substitute `PixelStreamer-tablet-v1.0.4.apk`.
 
 ## Build from source
 
-Requires JDK 17 and Android SDK Platform 35 (`build-tools 35.0.0`). Set `sdk.dir` in `local.properties` or export `ANDROID_HOME` and `JAVA_HOME`:
+Requires JDK 17 and Android SDK Platform 35 (`build-tools 35.0.0`). Set `sdk.dir` in `local.properties` or set `ANDROID_HOME` and `JAVA_HOME`:
 
 ```powershell
 $env:JAVA_HOME = "$env:LOCALAPPDATA\Android\jdk-17"
@@ -58,4 +65,4 @@ $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
 .\gradlew.bat testTvDebugUnitTest testTabletDebugUnitTest assembleTvRelease assembleTabletRelease
 ```
 
-Signed release APKs are written to `app\build\outputs\apk\tv\release\app-tv-release.apk` and `app\build\outputs\apk\tablet\release\app-tablet-release.apk`. Separate TV and Tablet APKs are also attached automatically on the GitHub Releases page.
+Signed release APKs are written to `app\build\outputs\apk\tv\release\app-tv-release.apk` and `app\build\outputs\apk\tablet\release\app-tablet-release.apk`.
