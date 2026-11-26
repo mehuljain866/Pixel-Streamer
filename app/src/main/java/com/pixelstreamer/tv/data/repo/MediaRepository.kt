@@ -766,6 +766,32 @@ class MediaRepository(
     }
 
     /**
+     * Re-scrapes the album HTML once (reusing cached metadata/filenames) to refresh
+     * `lh3.googleusercontent.com` base URLs when a long playback session encounters token expiry.
+     */
+    suspend fun refreshItemForPlayback(albumId: String, itemId: String): MediaItem? = withContext(Dispatchers.IO) {
+        val album = _albums.value.firstOrNull { it.id == albumId } ?: return@withContext null
+        return@withContext try {
+            val existing = _itemsByAlbum.value[album.id].orEmpty()
+            val existingById = existing.associateBy { it.id }
+            val scraped = scraper.fetchAlbum(album.url, cachedItemsById = existingById)
+            val freshBaseUrlById = scraped.items.associate { it.id to it.baseUrl }
+            stateMutex.withLock {
+                val latest = _itemsByAlbum.value[album.id].orEmpty()
+                val updated = latest.map { cur ->
+                    val freshBase = freshBaseUrlById[cur.id]
+                    if (!freshBase.isNullOrBlank() && freshBase != cur.baseUrl) cur.copy(baseUrl = freshBase) else cur
+                }
+                _itemsByAlbum.value = _itemsByAlbum.value.toMutableMap().apply { put(album.id, updated) }
+                saveToDisk()
+                updated.firstOrNull { it.id == itemId }
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
      * Immediately refreshes CDN links and pre-indexes byte headers/tail moov/resume offsets
      * for active Continue Watching items (plus the top featured item) on app launch.
      */

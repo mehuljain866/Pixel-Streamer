@@ -147,7 +147,7 @@ class StreamPreIndexer(
 
     companion object {
         private const val MAX_CACHE_BYTES = 96L * 1024L * 1024L
-        private const val WARM_URL_TTL_MS = 15L * 60L * 1000L
+        private const val WARM_URL_TTL_MS = 5L * 60L * 1000L
 
         fun cacheKeyFor(item: MediaItem, quality: VideoQuality): String {
             return "ps_${item.id}_${quality.name}_${item.baseUrl.hashCode()}"

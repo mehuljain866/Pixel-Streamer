@@ -50,6 +50,7 @@ import com.pixelstreamer.tv.data.model.MediaItem
 import com.pixelstreamer.tv.data.model.VideoQuality
 import com.pixelstreamer.tv.data.network.StreamPreIndexer
 import com.pixelstreamer.tv.databinding.ActivityPlayerBinding
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit
 import kotlin.math.roundToInt
@@ -72,6 +73,8 @@ class PlayerActivity : AppCompatActivity() {
     private var isScrubbing = false
     private var triedOriginalFallback = false
     private var hasStartedPlayback = false
+    private var errorRetryCount = 0
+    private var lastKnownPositionMs: Long = 0L
 
     private var pendingSeekTargetMs: Long = -1L
     private var isAwaitingSeekReady = false
@@ -330,13 +333,7 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun setupControls() {
         binding.btnPauseResume.setOnClickListener {
-            val exo = player ?: return@setOnClickListener
-            if (exo.isPlaying) {
-                exo.pause()
-            } else {
-                exo.play()
-                hideAllOverlays()
-            }
+            togglePlayOrRestart()
         }
 
         binding.btnPauseRew10.setOnClickListener {
@@ -394,17 +391,14 @@ class PlayerActivity : AppCompatActivity() {
                     }
                     val exo = player ?: return true
                     val controlsVisible = binding.controlsOverlay.visibility == View.VISIBLE
-                    val isBufferingOrIdle =
-                        exo.playbackState == Player.STATE_BUFFERING || exo.playbackState == Player.STATE_IDLE
                     when {
-                        isBufferingOrIdle || exo.isPlaying -> {
+                        exo.playbackState == Player.STATE_BUFFERING || exo.isPlaying -> {
                             if (controlsVisible) hideAllOverlays()
                             else showTimelineHudOnly(focusTimeline = false)
                         }
                         else -> {
                             if (controlsVisible) {
-                                exo.play()
-                                hideAllOverlays()
+                                togglePlayOrRestart()
                             } else {
                                 showPausedUi()
                             }
@@ -425,13 +419,7 @@ class PlayerActivity : AppCompatActivity() {
                             performImmediateSeekDelta(10_000L)
                             showTimelineHudOnly(focusTimeline = false)
                         }
-                        else -> {
-                            if (exo.isPlaying) exo.pause()
-                            else {
-                                exo.play()
-                                hideAllOverlays()
-                            }
-                        }
+                        else -> togglePlayOrRestart()
                     }
                     return true
                 }
@@ -645,6 +633,7 @@ class PlayerActivity : AppCompatActivity() {
                     }
                     Player.STATE_READY -> {
                         hasStartedPlayback = true
+                        errorRetryCount = 0
                         isAwaitingSeekReady = false
                         expectedSeekPosMs = -1L
                         binding.loadingOverlay.visibility = View.GONE
@@ -695,18 +684,39 @@ class PlayerActivity : AppCompatActivity() {
             override fun onPlayerError(error: PlaybackException) {
                 isAwaitingSeekReady = false
                 val active = currentItem
-                val fallbackPos = maxOf(exo.currentPosition, activeResumeTargetMs).coerceAtLeast(0L)
+                val recoverPos = maxOf(exo.currentPosition, lastKnownPositionMs, activeResumeTargetMs).coerceAtLeast(0L)
                 if (active != null) {
                     app.preIndexer.invalidateWarmUrl(active, currentQuality)
                 }
-                if (active != null && !triedOriginalFallback && currentQuality != VideoQuality.ORIGINAL) {
-                    triedOriginalFallback = true
-                    Toast.makeText(
-                        this@PlayerActivity,
-                        "Switching to original stream...",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                    loadStream(active, fallbackPos, overrideQuality = VideoQuality.ORIGINAL)
+                if (active != null && errorRetryCount < MAX_STREAM_ERROR_RETRIES) {
+                    val attempt = ++errorRetryCount
+                    binding.loadingOverlay.visibility = View.VISIBLE
+                    if (attempt >= 2) {
+                        Toast.makeText(
+                            this@PlayerActivity,
+                            "Reconnecting stream...",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                    lifecycleScope.launch {
+                        delay(600L)
+                        if (isFinishing) return@launch
+                        val targetItem = if (attempt >= 2) {
+                            repo.refreshItemForPlayback(active.albumId, active.id)?.also { currentItem = it } ?: active
+                        } else {
+                            active
+                        }
+                        val overrideQ = if (attempt >= MAX_STREAM_ERROR_RETRIES &&
+                            currentQuality != VideoQuality.ORIGINAL &&
+                            !triedOriginalFallback
+                        ) {
+                            triedOriginalFallback = true
+                            VideoQuality.ORIGINAL
+                        } else {
+                            null
+                        }
+                        loadStream(targetItem, recoverPos, overrideQuality = overrideQ)
+                    }
                 } else {
                     binding.loadingOverlay.visibility = View.GONE
                     binding.hudBufferSpinner.visibility = View.GONE
@@ -726,10 +736,30 @@ class PlayerActivity : AppCompatActivity() {
         handler.postDelayed(progressTickRunnable, 1000L)
     }
 
+    private fun togglePlayOrRestart() {
+        val exo = player ?: return
+        if (exo.isPlaying) {
+            exo.pause()
+            return
+        }
+        if (exo.playbackState == Player.STATE_IDLE) {
+            val active = currentItem ?: return
+            errorRetryCount = 0
+            val pos = maxOf(exo.currentPosition, lastKnownPositionMs, activeResumeTargetMs).coerceAtLeast(0L)
+            hideAllOverlays()
+            loadStream(active, pos)
+            return
+        }
+        exo.play()
+        hideAllOverlays()
+    }
+
     private fun switchToItem(next: MediaItem) {
         currentItem = next
         resumePositionMs = 0L
         activeResumeTargetMs = 0L
+        lastKnownPositionMs = 0L
+        errorRetryCount = 0
         hasStartedPlayback = false
         triedOriginalFallback = false
         isAwaitingSeekReady = false
@@ -907,6 +937,9 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         val pos = exo.currentPosition.coerceAtLeast(0L)
+        if (hasStartedPlayback && pos > 0L) {
+            lastKnownPositionMs = pos
+        }
         val dur = effectiveDurationMs()
         binding.pauseTimeDisplay.text = "${formatTime(pos)} / ${formatTime(dur)}"
         if (dur > 0L) {
@@ -975,12 +1008,7 @@ class PlayerActivity : AppCompatActivity() {
             KeyEvent.KEYCODE_ENTER -> {
                 if (exo != null && (!controlsVisible || binding.pauseSeekBar.isFocused)) {
                     if (pendingSeekTargetMs >= 0L) commitPendingSeek()
-                    if (exo.isPlaying) {
-                        exo.pause()
-                    } else {
-                        exo.play()
-                        hideAllOverlays()
-                    }
+                    togglePlayOrRestart()
                     return true
                 }
             }
@@ -1060,6 +1088,7 @@ class PlayerActivity : AppCompatActivity() {
         const val EXTRA_RESUME_MS = "extra_resume_ms"
         const val EXTRA_QUALITY = "extra_quality"
         private const val ACTION_PIP_TOGGLE_PLAY = "com.pixelstreamer.ACTION_PIP_TOGGLE_PLAY"
+        private const val MAX_STREAM_ERROR_RETRIES = 3
 
         fun computeSeekTargetMs(basePosMs: Long, deltaMs: Long, durationMs: Long): Long {
             val maxTarget = if (durationMs > 0L) (durationMs - 1000L).coerceAtLeast(0L) else Long.MAX_VALUE

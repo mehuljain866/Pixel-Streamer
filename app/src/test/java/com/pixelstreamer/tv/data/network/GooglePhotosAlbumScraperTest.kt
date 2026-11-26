@@ -177,4 +177,14 @@ class GooglePhotosAlbumScraperTest {
         assertEquals("https://lh3.googleusercontent.com/pw/XYZ=m22", candidates[2])
         assertEquals("https://lh3.googleusercontent.com/pw/XYZ=dv", candidates[3])
     }
+
+    @Test
+    fun selectReusableStreamUrl_keepsPermanentLh3UrlInsteadOfExpiringVideoDownloadsRedirect() {
+        val permDv = "https://lh3.googleusercontent.com/pw/ABC123=dv"
+        val expiringRedirect = "https://video-downloads.googleusercontent.com/ADGPM2abc?expire=1700000900"
+        assertEquals(permDv, GooglePhotosAlbumScraper.selectReusableStreamUrl(permDv, expiringRedirect))
+
+        val signed = "https://video-downloads.googleusercontent.com/direct?itag=37"
+        assertEquals(signed, GooglePhotosAlbumScraper.selectReusableStreamUrl(signed, signed))
+    }
 }

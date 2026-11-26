@@ -345,7 +345,7 @@ class GooglePhotosAlbumScraper(private val httpClient: OkHttpClient) {
                     resp.header("Content-Length")?.toLongOrNull() ?: -1L
                 }
                 ResolvedStreamInfo(
-                    url = finalUrl,
+                    url = selectReusableStreamUrl(url, finalUrl),
                     totalBytes = totalBytes,
                     rangeSupported = rangeSupported
                 )
@@ -471,5 +471,21 @@ class GooglePhotosAlbumScraper(private val httpClient: OkHttpClient) {
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
         private const val VIDEO_EXT_KEY = "76647426"
         private const val CAPTION_EXT_KEY = "396644657"
+
+        /**
+         * Avoid pinning short-lived (~10-15 min) `video-downloads.googleusercontent.com` redirect URLs
+         * when the permanent `lh3.googleusercontent.com` URL works, so OkHttp obtains a fresh token
+         * automatically whenever ExoPlayer reconnects or seeks late into a movie.
+         */
+        fun selectReusableStreamUrl(requestedUrl: String, finalUrl: String): String {
+            return if (
+                requestedUrl.startsWith("https://lh3.googleusercontent.com/") &&
+                finalUrl.contains("video-downloads.googleusercontent.com")
+            ) {
+                requestedUrl
+            } else {
+                finalUrl
+            }
+        }
     }
 }
