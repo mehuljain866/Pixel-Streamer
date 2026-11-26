@@ -28,10 +28,18 @@ import java.security.SecureRandom
  * Lightweight embedded LAN HTTP server so users can paste Google Photos shared album links,
  * select/unselect items, rename movies, and configure TMDB keys directly from their phone browser.
  */
-class CompanionWebServer(
-    private val repo: MediaRepository,
-    val sessionPin: String = generatePin()
+class CompanionWebServer private constructor(
+    private val repo: MediaRepository?,
+    val sessionPin: String,
+    private val preferredPort: Int,
+    private val stateJsonProvider: (() -> String)?
 ) {
+
+    constructor(repo: MediaRepository, sessionPin: String = generatePin()) :
+        this(repo, sessionPin, DEFAULT_PORT, null)
+
+    internal constructor(sessionPin: String = generatePin(), stateJsonProvider: () -> String) :
+        this(null, sessionPin, 0, stateJsonProvider)
 
     private var serverSocket: ServerSocket? = null
     private var acceptJob: Job? = null
@@ -48,7 +56,7 @@ class CompanionWebServer(
         val s = CoroutineScope(SupervisorJob() + Dispatchers.IO + exceptionHandler)
         scope = s
         val ss = try {
-            ServerSocket(DEFAULT_PORT)
+            ServerSocket(preferredPort)
         } catch (_: Exception) {
             runCatching { ServerSocket(0) }.getOrNull()
         } ?: return null
@@ -211,15 +219,23 @@ class CompanionWebServer(
                 )
             }
 
+            if (method == "GET" && path == "/api/state") {
+                return DispatchResult("200 OK", "application/json", buildStateJson())
+            }
+            val activeRepo = repo ?: return DispatchResult(
+                "503 Service Unavailable",
+                "application/json",
+                """{"ok":false,"error":"Repository unavailable"}"""
+            )
+
             when {
-                method == "GET" && path == "/api/state" -> DispatchResult("200 OK", "application/json", buildStateJson())
                 method == "POST" && path == "/api/albums" -> {
                     val json = JSONObject(body)
                     val url = json.optString("url")
                     val title = json.optString("customTitle")
                     val typeStr = json.optString("type", "AUTO")
                     val type = AlbumType.entries.firstOrNull { it.name == typeStr } ?: AlbumType.AUTO
-                    val res = runBlocking { repo.addAndSyncAlbum(url, title, type) }
+                    val res = runBlocking { activeRepo.addAndSyncAlbum(url, title, type) }
                     if (res.isSuccess) {
                         DispatchResult("200 OK", "application/json", JSONObject().put("ok", true).put("album", res.getOrThrow().displayTitle).toString())
                     } else {
@@ -228,18 +244,18 @@ class CompanionWebServer(
                 }
                 method == "POST" && path == "/api/albums/toggle" -> {
                     val json = JSONObject(body)
-                    runBlocking { repo.toggleAlbumEnabled(json.getString("albumId"), json.getBoolean("enabled")) }
+                    runBlocking { activeRepo.toggleAlbumEnabled(json.getString("albumId"), json.getBoolean("enabled")) }
                     DispatchResult("200 OK", "application/json", """{"ok":true}""")
                 }
                 method == "POST" && path == "/api/albums/delete" -> {
                     val json = JSONObject(body)
-                    runBlocking { repo.removeAlbum(json.getString("albumId")) }
+                    runBlocking { activeRepo.removeAlbum(json.getString("albumId")) }
                     DispatchResult("200 OK", "application/json", """{"ok":true}""")
                 }
                 method == "POST" && path == "/api/items/toggle" -> {
                     val json = JSONObject(body)
                     runBlocking {
-                        repo.toggleItemHidden(
+                        activeRepo.toggleItemHidden(
                             json.getString("albumId"),
                             json.getString("itemId"),
                             json.getBoolean("hidden")
@@ -250,7 +266,7 @@ class CompanionWebServer(
                 method == "POST" && path == "/api/items/rename" -> {
                     val json = JSONObject(body)
                     val meta = runBlocking {
-                        repo.setCustomMovieTitleAndRematch(
+                        activeRepo.setCustomMovieTitleAndRematch(
                             json.getString("albumId"),
                             json.getString("itemId"),
                             json.optString("title")
@@ -265,16 +281,16 @@ class CompanionWebServer(
                 method == "POST" && path == "/api/settings" -> {
                     val json = JSONObject(body)
                     if (json.has("tmdbApiKey")) {
-                        repo.tmdbApiKey = json.optString("tmdbApiKey")
+                        activeRepo.tmdbApiKey = json.optString("tmdbApiKey")
                     }
                     if (json.has("quality")) {
                         val q = VideoQuality.entries.firstOrNull { it.name == json.optString("quality") }
-                        if (q != null) repo.defaultQuality = q
+                        if (q != null) activeRepo.defaultQuality = q
                     }
                     DispatchResult("200 OK", "application/json", """{"ok":true}""")
                 }
                 method == "POST" && path == "/api/sync" -> {
-                    runBlocking { repo.syncAllEnabledAlbums() }
+                    runBlocking { activeRepo.syncAllEnabledAlbums() }
                     DispatchResult("200 OK", "application/json", """{"ok":true}""")
                 }
                 else -> DispatchResult("404 Not Found", "application/json", """{"error":"Not found"}""")
@@ -285,9 +301,11 @@ class CompanionWebServer(
     }
 
     private fun buildStateJson(): String {
+        stateJsonProvider?.invoke()?.let { return it }
+        val activeRepo = repo!!
         val albumsArr = JSONArray()
-        val itemsMap = repo.itemsByAlbum.value
-        for (a in repo.albums.value) {
+        val itemsMap = activeRepo.itemsByAlbum.value
+        for (a in activeRepo.albums.value) {
             val itemsArr = JSONArray()
             for (it in itemsMap[a.id].orEmpty()) {
                 itemsArr.put(
@@ -321,11 +339,11 @@ class CompanionWebServer(
         }
         return JSONObject().apply {
             put("albums", albumsArr)
-            put("moviesCount", repo.getMovieItems().size)
-            put("showsCount", repo.buildShows().size)
-            put("photosCount", repo.getPhotoItems().size)
-            put("tmdbApiKey", repo.tmdbApiKey)
-            put("quality", repo.defaultQuality.name)
+            put("moviesCount", activeRepo.getMovieItems().size)
+            put("showsCount", activeRepo.buildShows().size)
+            put("photosCount", activeRepo.getPhotoItems().size)
+            put("tmdbApiKey", activeRepo.tmdbApiKey)
+            put("quality", activeRepo.defaultQuality.name)
         }.toString()
     }
 

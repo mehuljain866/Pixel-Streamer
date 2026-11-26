@@ -4,6 +4,8 @@ import com.pixelstreamer.tv.data.model.MovieMetadata
 import com.pixelstreamer.tv.util.ParsedTitle
 import com.pixelstreamer.tv.util.TitleCleaner
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -59,14 +61,20 @@ class MovieMetadataResolver(private val httpClient: OkHttpClient) {
         val cleanSeries = TitleCleaner.cleanDisplayTitle(seriesTitle)
         if (cleanSeries.isBlank()) return@withContext null
 
-        val imdbHit = queryImdbSuggestion(cleanSeries, null, isTv = true)
+        // Run IMDb suggestion, TVmaze, and optional TMDB concurrently to cut show lookup latency.
+        val (imdbHit, tvMazeBundle, tmdbShow) = coroutineScope {
+            val imdbDef = async { queryImdbSuggestion(cleanSeries, null, isTv = true) }
+            val tvMazeDef = async { queryTvMazeBundle(cleanSeries) }
+            val tmdbDef = async {
+                if (tmdbKey.isNotBlank()) {
+                    queryTmdb(ParsedTitle(queryTitle = cleanSeries, season = 1, isEpisode = true), tmdbKey)
+                } else null
+            }
+            Triple(imdbDef.await(), tvMazeDef.await(), tmdbDef.await())
+        }
         val cinemetaBundle = imdbHit?.second?.let { imdbId ->
             queryCinemetaBundle("series", imdbId)
         }
-        val tvMazeBundle = queryTvMazeBundle(cleanSeries)
-        val tmdbShow = if (tmdbKey.isNotBlank()) {
-            queryTmdb(ParsedTitle(queryTitle = cleanSeries, season = 1, isEpisode = true), tmdbKey)
-        } else null
 
         val baseMeta = cinemetaBundle?.showMeta ?: tvMazeBundle?.showMeta ?: imdbHit?.first ?: tmdbShow
         if (baseMeta != null) {

@@ -15,13 +15,16 @@ import com.pixelstreamer.tv.data.network.MovieMetadataResolver
 import com.pixelstreamer.tv.data.network.StreamPreIndexer
 import com.pixelstreamer.tv.data.network.TvShowBundle
 import com.pixelstreamer.tv.util.TitleCleaner
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
@@ -43,6 +46,8 @@ class MediaRepository(
     private val prefs = context.getSharedPreferences("pixelstreamer_prefs", Context.MODE_PRIVATE)
     private val cacheFile = File(context.filesDir, "albums_cache_v1.json")
     private val stateMutex = Mutex()
+    private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val inFlightAlbumAdds = java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
     private val _albums = MutableStateFlow<List<AlbumSource>>(emptyList())
     val albums: StateFlow<List<AlbumSource>> = _albums.asStateFlow()
@@ -93,37 +98,52 @@ class MediaRepository(
         customTitle: String = "",
         type: AlbumType = AlbumType.AUTO
     ): Result<AlbumSource> = withContext(Dispatchers.IO) {
+        val cleanUrl = scraper.extractUrlFromText(url)
+            ?: return@withContext Result.failure(IllegalArgumentException("Invalid Google Photos link"))
+        if (!inFlightAlbumAdds.add(cleanUrl)) {
+            return@withContext Result.failure(IllegalStateException("Album is already syncing"))
+        }
         try {
             _isSyncing.value = true
             _syncError.value = null
-            val cleanUrl = scraper.extractUrlFromText(url)
-                ?: return@withContext Result.failure(IllegalArgumentException("Invalid Google Photos link"))
 
-            val albumId = UUID.randomUUID().toString().take(12)
+            val existingMatch = _albums.value.firstOrNull { it.url == cleanUrl || it.resolvedUrl == cleanUrl }
+            val albumId = existingMatch?.id ?: UUID.randomUUID().toString().take(12)
             val initialSource = AlbumSource(
                 id = albumId,
                 url = cleanUrl,
-                customTitle = customTitle.trim(),
-                type = type,
+                customTitle = customTitle.trim().ifBlank { existingMatch?.customTitle.orEmpty() },
+                type = if (type != AlbumType.AUTO) type else (existingMatch?.type ?: AlbumType.AUTO),
                 enabled = true
             )
-            val synced = syncSingleAlbumInternal(initialSource)
-            stateMutex.withLock {
+
+            // Phase 1 (fast): scrape album + parse episodes/titles and publish immediately so TV & phone update fast.
+            val existingById = _itemsByAlbum.value[albumId].orEmpty().associateBy { it.id }
+            val scraped = scraper.fetchAlbum(cleanUrl, cachedItemsById = existingById)
+            val initialParsed = buildInitialParsedItems(initialSource, scraped, existingById)
+            val initialAlbum = initialSource.copy(
+                resolvedUrl = scraped.resolvedUrl,
+                title = scraped.albumTitle,
+                lastSyncedAt = System.currentTimeMillis(),
+                itemCount = initialParsed.size
+            )
+
+            val savedAlbum = stateMutex.withLock {
                 val existing = _albums.value.firstOrNull {
-                    it.resolvedUrl == synced.first.resolvedUrl || it.url == cleanUrl
+                    it.resolvedUrl == initialAlbum.resolvedUrl || it.url == cleanUrl
                 }
                 val finalAlbum = if (existing != null) {
-                    synced.first.copy(
+                    initialAlbum.copy(
                         id = existing.id,
                         customTitle = customTitle.trim().ifBlank { existing.customTitle },
                         type = if (type != AlbumType.AUTO) type else existing.type
                     )
                 } else {
-                    synced.first
+                    initialAlbum
                 }
                 val updatedItems = mergeUserOverrides(
                     existingItems = _itemsByAlbum.value[finalAlbum.id].orEmpty(),
-                    freshItems = synced.second.map { it.copy(albumId = finalAlbum.id) }
+                    freshItems = initialParsed.map { it.copy(albumId = finalAlbum.id) }
                 )
                 val updatedAlbums = _albums.value.filterNot { it.id == finalAlbum.id } + finalAlbum
                 _albums.value = updatedAlbums
@@ -131,12 +151,21 @@ class MediaRepository(
                     put(finalAlbum.id, updatedItems)
                 }
                 saveToDisk()
-                Result.success(finalAlbum)
+                finalAlbum
             }
+
+            // Phase 2 (background): fetch posters, Title Logos, and episode details without blocking phone/TV response.
+            backgroundScope.launch {
+                runCatching { enrichAlbumMetadataInBackground(savedAlbum.id) }
+                runCatching { preIndexContinueWatchingAndHero() }
+            }
+
+            Result.success(savedAlbum)
         } catch (e: Exception) {
             _syncError.value = e.message ?: "Failed to sync shared album"
             Result.failure(e)
         } finally {
+            inFlightAlbumAdds.remove(cleanUrl)
             _isSyncing.value = false
         }
     }
@@ -182,16 +211,108 @@ class MediaRepository(
         }
     }
 
+    private fun buildInitialParsedItems(
+        album: AlbumSource,
+        scraped: com.pixelstreamer.tv.data.network.ScrapedAlbumResult,
+        existingById: Map<String, MediaItem>
+    ): List<MediaItem> {
+        val albumDisplayHint = album.customTitle.ifBlank { scraped.albumTitle }
+        val forceShowAlbum = album.type == AlbumType.SHOWS
+        return scraped.items.map { item ->
+            val prev = existingById[item.id]
+            val customTitle = prev?.customTitle.orEmpty()
+            val candidateTitle = customTitle
+                .ifBlank { item.caption }
+                .ifBlank { item.originalFilename }
+            val parsed = if (item.isVideo && candidateTitle.isNotBlank() && album.type != AlbumType.PHOTOS) {
+                TitleCleaner.parse(
+                    rawInput = candidateTitle,
+                    albumTitleHint = albumDisplayHint,
+                    forceShowAlbum = forceShowAlbum
+                )
+            } else {
+                null
+            }
+            if (parsed != null && parsed.isEpisode && album.type != AlbumType.MOVIES) {
+                item.copy(
+                    albumId = album.id,
+                    customTitle = customTitle,
+                    hidden = prev?.hidden ?: false,
+                    movieMetadata = prev?.movieMetadata,
+                    isEpisode = true,
+                    seriesTitle = prev?.seriesTitle?.ifBlank { parsed.queryTitle } ?: parsed.queryTitle,
+                    seasonNumber = parsed.season ?: 1,
+                    episodeNumber = parsed.episode,
+                    episodeTitle = prev?.episodeTitle?.ifBlank { parsed.episodeTitleHint } ?: parsed.episodeTitleHint,
+                    episodeOverview = prev?.episodeOverview.orEmpty(),
+                    episodeStillUrl = prev?.episodeStillUrl
+                )
+            } else {
+                item.copy(
+                    albumId = album.id,
+                    customTitle = customTitle,
+                    hidden = prev?.hidden ?: false,
+                    movieMetadata = prev?.movieMetadata,
+                    isEpisode = false
+                )
+            }
+        }
+    }
+
+    private suspend fun enrichAlbumMetadataInBackground(albumId: String) {
+        val album = _albums.value.firstOrNull { it.id == albumId } ?: return
+        val itemsSnapshot = _itemsByAlbum.value[albumId].orEmpty()
+        if (itemsSnapshot.isEmpty()) return
+
+        val albumDisplayHint = album.customTitle.ifBlank { album.title }
+        val forceShowAlbum = album.type == AlbumType.SHOWS
+        val enriched = resolveMetadataForItems(itemsSnapshot, album, albumDisplayHint, forceShowAlbum)
+
+        stateMutex.withLock {
+            val current = _itemsByAlbum.value[albumId].orEmpty()
+            val enrichedById = enriched.associateBy { it.id }
+            val merged = current.map { cur ->
+                val fresh = enrichedById[cur.id] ?: return@map cur
+                cur.copy(
+                    seriesTitle = fresh.seriesTitle.ifBlank { cur.seriesTitle },
+                    episodeTitle = fresh.episodeTitle.ifBlank { cur.episodeTitle },
+                    episodeOverview = fresh.episodeOverview.ifBlank { cur.episodeOverview },
+                    episodeStillUrl = fresh.episodeStillUrl ?: cur.episodeStillUrl,
+                    movieMetadata = fresh.movieMetadata ?: cur.movieMetadata
+                )
+            }
+            _itemsByAlbum.value = _itemsByAlbum.value.toMutableMap().apply { put(albumId, merged) }
+            saveToDisk()
+        }
+    }
+
     private suspend fun syncSingleAlbumInternal(album: AlbumSource): Pair<AlbumSource, List<MediaItem>> {
         val existingById = _itemsByAlbum.value[album.id].orEmpty().associateBy { it.id }
         val scraped = scraper.fetchAlbum(album.url, cachedItemsById = existingById)
         val albumDisplayHint = album.customTitle.ifBlank { scraped.albumTitle }
         val forceShowAlbum = album.type == AlbumType.SHOWS
 
-        // First pass: parse filenames/captions to identify Movies vs TV Episodes
-        val parsedPairs = scraped.items.map { item ->
-            val prev = existingById[item.id]
-            val customTitle = prev?.customTitle.orEmpty()
+        val resolvedItems = resolveMetadataForItems(scraped.items, album, albumDisplayHint, forceShowAlbum, existingById)
+
+        val updatedAlbum = album.copy(
+            resolvedUrl = scraped.resolvedUrl,
+            title = scraped.albumTitle,
+            lastSyncedAt = System.currentTimeMillis(),
+            itemCount = resolvedItems.size
+        )
+        return updatedAlbum to resolvedItems
+    }
+
+    private suspend fun resolveMetadataForItems(
+        items: List<MediaItem>,
+        album: AlbumSource,
+        albumDisplayHint: String,
+        forceShowAlbum: Boolean,
+        existingById: Map<String, MediaItem> = emptyMap()
+    ): List<MediaItem> {
+        val parsedPairs = items.map { item ->
+            val prev = existingById[item.id] ?: item
+            val customTitle = prev.customTitle
             val candidateTitle = customTitle
                 .ifBlank { item.caption }
                 .ifBlank { item.originalFilename }
@@ -207,11 +328,10 @@ class MediaRepository(
             Triple(item, prev, parsed)
         }
 
-        // Fetch TVmaze/TMDB bundle ONCE per unique show series
-        val showBundles = mutableMapOf<String, TvShowBundle?>()
+        val showBundles = java.util.concurrent.ConcurrentHashMap<String, TvShowBundle?>()
         val uniqueShowKeys = parsedPairs
-            .mapNotNull { (_, _, p) ->
-                if (p != null && p.isEpisode && p.queryTitle.isNotBlank()) {
+            .mapNotNull { (_, prev, p) ->
+                if (p != null && p.isEpisode && p.queryTitle.isNotBlank() && (prev.movieMetadata == null || prev.movieMetadata.logoUrl.isNullOrBlank())) {
                     TitleCleaner.normalizeSeriesKey(p.queryTitle) to p.queryTitle
                 } else null
             }
@@ -226,13 +346,13 @@ class MediaRepository(
         }
 
         val shouldLookupMovies = album.type == AlbumType.MOVIES || album.type == AlbumType.AUTO
-        val resolvedItems = coroutineScope {
-            val sem = Semaphore(4)
+        return coroutineScope {
+            val sem = Semaphore(6)
             parsedPairs.map { (item, prev, parsed) ->
                 async {
                     sem.withPermit {
-                        val customTitle = prev?.customTitle.orEmpty()
-                        val hidden = prev?.hidden ?: false
+                        val customTitle = prev.customTitle
+                        val hidden = prev.hidden
                         val candidateTitle = customTitle
                             .ifBlank { item.caption }
                             .ifBlank { item.originalFilename }
@@ -243,7 +363,7 @@ class MediaRepository(
                             val s = parsed.season ?: 1
                             val e = parsed.episode
                             val epInfo = if (e != null) bundle?.episodesByKey?.get(s to e) else null
-                            val showMeta = bundle?.showMeta ?: prev?.movieMetadata
+                            val showMeta = bundle?.showMeta ?: prev.movieMetadata
                             val resolvedSeriesName = showMeta?.matchedTitle?.ifBlank { parsed.queryTitle } ?: parsed.queryTitle
 
                             item.copy(
@@ -255,13 +375,14 @@ class MediaRepository(
                                 seriesTitle = resolvedSeriesName,
                                 seasonNumber = s,
                                 episodeNumber = e,
-                                episodeTitle = epInfo?.title?.ifBlank { parsed.episodeTitleHint } ?: parsed.episodeTitleHint,
-                                episodeOverview = epInfo?.overview.orEmpty(),
-                                episodeStillUrl = epInfo?.stillUrl
+                                episodeTitle = epInfo?.title?.ifBlank { prev.episodeTitle.ifBlank { parsed.episodeTitleHint } }
+                                    ?: prev.episodeTitle.ifBlank { parsed.episodeTitleHint },
+                                episodeOverview = epInfo?.overview?.ifBlank { prev.episodeOverview } ?: prev.episodeOverview,
+                                episodeStillUrl = epInfo?.stillUrl ?: prev.episodeStillUrl
                             )
                         } else {
                             val shouldMatch = item.isVideo && shouldLookupMovies && candidateTitle.isNotBlank()
-                            val cachedMeta = prev?.movieMetadata
+                            val cachedMeta = prev.movieMetadata
                             val needsRefresh = cachedMeta == null || cachedMeta.logoUrl.isNullOrBlank()
                             val metadata = if (shouldMatch && needsRefresh) {
                                 metadataResolver.resolve(
@@ -284,14 +405,6 @@ class MediaRepository(
                 }
             }.awaitAll()
         }
-
-        val updatedAlbum = album.copy(
-            resolvedUrl = scraped.resolvedUrl,
-            title = scraped.albumTitle,
-            lastSyncedAt = System.currentTimeMillis(),
-            itemCount = resolvedItems.size
-        )
-        return updatedAlbum to resolvedItems
     }
 
     private fun mergeUserOverrides(

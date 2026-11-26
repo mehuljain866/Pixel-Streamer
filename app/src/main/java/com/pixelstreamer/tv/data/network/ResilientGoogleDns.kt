@@ -74,42 +74,46 @@ class ResilientGoogleDns : Dns {
             dohClient.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return null
                 val body = resp.body?.string() ?: return null
-                val json = JSONObject(body)
-                val answers = json.optJSONArray("Answer") ?: return null
-                val result = mutableListOf<InetAddress>()
-                for (i in 0 until answers.length()) {
-                    val ans = answers.optJSONObject(i) ?: continue
-                    if (ans.optInt("type") == 1) {
-                        val ip = ans.optString("data").trim()
-                        if (ip.isNotEmpty() && !isSinkholeIp(ip)) {
-                            parseNumericIpv4(ip)?.let { result.add(it) }
-                        }
-                    }
-                }
-                result.takeIf { it.isNotEmpty() }
+                parseDohJsonAnswer(body).takeIf { it.isNotEmpty() }
             }
         } catch (_: Exception) {
             null
         }
     }
 
-    private fun parseNumericIpv4(ip: String): InetAddress? {
-        val parts = ip.split('.')
-        if (parts.size != 4) return null
-        val bytes = ByteArray(4)
-        for (i in 0 until 4) {
-            val v = parts[i].toIntOrNull() ?: return null
-            if (v !in 0..255) return null
-            bytes[i] = v.toByte()
-        }
-        return InetAddress.getByAddress(ip, bytes)
-    }
-
-    private fun isSinkholeIp(ip: String): Boolean {
-        return ip.startsWith("49.44.79.") || ip == "0.0.0.0" || ip == "127.0.0.1"
-    }
-
     companion object {
         private const val CACHE_TTL_MS = 5 * 60 * 1000L
+
+        fun parseDohJsonAnswer(body: String): List<InetAddress> {
+            val json = JSONObject(body)
+            val answers = json.optJSONArray("Answer") ?: return emptyList()
+            val result = mutableListOf<InetAddress>()
+            for (i in 0 until answers.length()) {
+                val ans = answers.optJSONObject(i) ?: continue
+                if (ans.optInt("type") == 1) {
+                    val ip = ans.optString("data").trim()
+                    if (ip.isNotEmpty() && !isSinkholeIp(ip)) {
+                        parseNumericIpv4(ip)?.let { result.add(it) }
+                    }
+                }
+            }
+            return result
+        }
+
+        fun parseNumericIpv4(ip: String): InetAddress? {
+            val parts = ip.split('.')
+            if (parts.size != 4) return null
+            val bytes = ByteArray(4)
+            for (i in 0 until 4) {
+                val v = parts[i].toIntOrNull() ?: return null
+                if (v !in 0..255) return null
+                bytes[i] = v.toByte()
+            }
+            return InetAddress.getByAddress(ip, bytes)
+        }
+
+        fun isSinkholeIp(ip: String): Boolean {
+            return ip.startsWith("49.44.79.") || ip == "0.0.0.0" || ip == "127.0.0.1"
+        }
     }
 }
