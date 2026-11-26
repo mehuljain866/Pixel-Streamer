@@ -105,4 +105,34 @@ class GooglePhotosAlbumScraperTest {
         assertEquals(120000L, detail.durationMs)
         assertEquals(listOf(37, 22, 18), detail.availableItags)
     }
+
+    @Test
+    fun extractsSignedVideoDownloadUrlsAndFilters720pQualities() {
+        val html = """
+            "https://video-downloads.googleusercontent.com/abc123\u003fexpires\u003d999\u0026itag\u003d37\u0026sig\u003dXYZ"
+            "https://video-downloads.googleusercontent.com/def456?expires=999&itag=22&sig=UVW"
+        """.trimIndent()
+        val urls = scraper.extractSignedStreamUrls(html)
+        assertEquals(
+            "https://video-downloads.googleusercontent.com/def456?expires=999&itag=22&sig=UVW",
+            urls[22]
+        )
+
+        val movie720 = com.pixelstreamer.tv.data.model.MediaItem(
+            id = "m720",
+            albumId = "a1",
+            albumShareId = "s1",
+            albumKey = "k1",
+            baseUrl = "https://lh3.googleusercontent.com/pw/1",
+            width = 1280,
+            height = 534,
+            timestampMs = 0L,
+            isVideo = true
+        )
+        assertFalse(com.pixelstreamer.tv.data.model.VideoQuality.Q1080P in movie720.supportedQualities())
+        assertTrue(com.pixelstreamer.tv.data.model.VideoQuality.Q720P in movie720.supportedQualities())
+
+        val movie1080 = movie720.copy(width = 1920, height = 802)
+        assertTrue(com.pixelstreamer.tv.data.model.VideoQuality.Q1080P in movie1080.supportedQualities())
+    }
 }

@@ -26,7 +26,8 @@ data class ScrapedAlbumResult(
 data class ItemDetailResult(
     val caption: String,
     val availableItags: List<Int>,
-    val durationMs: Long
+    val durationMs: Long,
+    val streamUrlsByItag: Map<Int, String> = emptyMap()
 )
 
 class GooglePhotosAlbumScraper(private val httpClient: OkHttpClient) {
@@ -122,12 +123,32 @@ class GooglePhotosAlbumScraper(private val httpClient: OkHttpClient) {
         val caption = metaObj.optJSONArray(CAPTION_EXT_KEY)?.optString(0)?.trim().orEmpty()
         val videoBlock = metaObj.optJSONArray(VIDEO_EXT_KEY)
         val durationMs = videoBlock?.optLong(0, 0L) ?: 0L
-        val itags = extractAvailableItags(videoBlock)
+        val streamUrls = extractSignedStreamUrls(html)
+        val itags = (extractAvailableItags(videoBlock) + streamUrls.keys).distinct()
         return ItemDetailResult(
             caption = caption,
             availableItags = itags,
-            durationMs = durationMs
+            durationMs = durationMs,
+            streamUrlsByItag = streamUrls
         )
+    }
+
+    fun extractSignedStreamUrls(html: String): Map<Int, String> {
+        val map = mutableMapOf<Int, String>()
+        val cleaned = html
+            .replace("\\u003d", "=")
+            .replace("\\u0026", "&")
+            .replace("\\/", "/")
+        val urlRegex = Regex("""https://video-downloads\.googleusercontent\.com/[^\s"'<>\\|]+""")
+        for (m in urlRegex.findAll(cleaned)) {
+            val url = m.value.trimEnd(',', ';')
+            val itag = Regex("""[?&]itag=(\d+)""").find(url)?.groupValues?.get(1)?.toIntOrNull()
+                ?: continue
+            if (!map.containsKey(itag)) {
+                map[itag] = url
+            }
+        }
+        return map
     }
 
     private suspend fun enrichItems(
@@ -183,47 +204,107 @@ class GooglePhotosAlbumScraper(private val httpClient: OkHttpClient) {
     }
 
     /**
-     * Resolves a fresh playable MP4 URL right before playback so CDN tokens never go stale.
+     * Resolves a fresh playable high-definition MP4 URL right before playback so CDN tokens never go stale.
      */
     suspend fun resolveFreshStreamUrl(
         item: MediaItem,
         preferredQuality: VideoQuality
     ): String = withContext(Dispatchers.IO) {
+        val dvUrl = "${item.baseUrl}=dv"
         if (preferredQuality == VideoQuality.ORIGINAL) {
-            return@withContext "${item.baseUrl}=dv"
+            return@withContext dvUrl
         }
 
         val detail = fetchItemDetail(item.albumShareId, item.albumKey, item.id)
         val available = detail?.availableItags?.takeIf { it.isNotEmpty() } ?: item.availableItags
+        val signedUrls = detail?.streamUrlsByItag.orEmpty()
 
-        val candidates = buildCandidateUrls(item.baseUrl, available, preferredQuality)
+        // For AUTO, prefer untouched Original (=dv) whenever the CDN supports HTTP 206 Range seeking
+        // so 1080p/720p movies never suffer Google Photos' 240p/360p proxy compression.
+        if (preferredQuality == VideoQuality.AUTO && probeRangeSeekable(dvUrl)) {
+            return@withContext dvUrl
+        }
+
+        val candidates = buildCandidateUrls(
+            item = item,
+            available = available,
+            signedUrls = signedUrls,
+            preferred = preferredQuality
+        )
         for (candidate in candidates) {
             if (probeStreamUrl(candidate)) {
                 return@withContext candidate
             }
         }
-        "${item.baseUrl}=dv"
+        dvUrl
     }
 
     private fun buildCandidateUrls(
-        baseUrl: String,
+        item: MediaItem,
         available: List<Int>,
+        signedUrls: Map<Int, String>,
         preferred: VideoQuality
     ): List<String> {
-        val orderedItags = when (preferred) {
-            VideoQuality.Q1080P -> listOf(37, 22, 18, 36)
-            VideoQuality.Q720P -> listOf(22, 18, 36)
-            VideoQuality.Q360P -> listOf(18, 36)
-            VideoQuality.AUTO -> listOf(37, 22, 18, 36)
-            VideoQuality.ORIGINAL -> emptyList()
+        val dvUrl = "${item.baseUrl}=dv"
+        val out = mutableListOf<String>()
+
+        fun addItags(itags: List<Int>) {
+            val filtered = if (available.isNotEmpty()) {
+                itags.filter { it in available }.ifEmpty { itags }
+            } else {
+                itags
+            }
+            for (tag in filtered.distinct()) {
+                signedUrls[tag]?.let { out.add(it) }
+                out.add("${item.baseUrl}=m$tag")
+            }
         }
-        val matching = if (available.isNotEmpty()) {
-            val hits = orderedItags.filter { it in available }
-            hits.ifEmpty { available.sortedDescending() }
-        } else {
-            orderedItags
+
+        when (preferred) {
+            VideoQuality.AUTO -> {
+                addItags(listOf(37, 22))
+                out.add(dvUrl)
+                addItags(listOf(18, 36))
+            }
+            VideoQuality.Q1080P -> {
+                addItags(listOf(37))
+                if (item.supports1080p) {
+                    // Never silently drop to 360p when 1080p proxy is 404 and Original is 1080p+
+                    out.add(dvUrl)
+                }
+                addItags(listOf(22, 18, 36))
+            }
+            VideoQuality.Q720P -> {
+                addItags(listOf(22))
+                if (!item.supports1080p && item.supports720p) {
+                    out.add(dvUrl)
+                }
+                addItags(listOf(18, 36))
+                out.add(dvUrl)
+            }
+            VideoQuality.Q360P -> {
+                addItags(listOf(18, 36))
+                out.add(dvUrl)
+            }
+            VideoQuality.ORIGINAL -> out.add(dvUrl)
         }
-        return matching.distinct().map { "$baseUrl=m$it" } + listOf("$baseUrl=dv")
+        return out.distinct()
+    }
+
+    private fun probeRangeSeekable(url: String): Boolean {
+        return try {
+            val req = Request.Builder()
+                .url(url)
+                .header("User-Agent", DESKTOP_UA)
+                .header("Range", "bytes=0-1023")
+                .build()
+            httpClient.newCall(req).execute().use { resp ->
+                resp.code == 206 ||
+                    (resp.code == 200 && resp.header("Accept-Ranges").equals("bytes", ignoreCase = true))
+            }
+        } catch (_: Exception) {
+            false
+        }
     }
 
     private fun probeStreamUrl(url: String): Boolean {

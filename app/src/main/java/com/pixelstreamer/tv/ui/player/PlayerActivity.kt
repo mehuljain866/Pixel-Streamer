@@ -17,6 +17,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MediaItem as ExoMediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
@@ -55,6 +56,9 @@ class PlayerActivity : AppCompatActivity() {
     private var isAwaitingSeekReady = false
     private var expectedSeekPosMs: Long = -1L
     private var seekAwaitDeadlineMs: Long = 0L
+    private var playingVideoWidth: Int = 0
+    private var playingVideoHeight: Int = 0
+    private var baseHudTitle: String = ""
 
     private val handler = Handler(Looper.getMainLooper())
     private val autoHideControlsRunnable = Runnable {
@@ -79,7 +83,7 @@ class PlayerActivity : AppCompatActivity() {
         val itemId = intent.getStringExtra(EXTRA_ITEM_ID).orEmpty()
         resumePositionMs = intent.getLongExtra(EXTRA_RESUME_MS, 0L)
         val qName = intent.getStringExtra(EXTRA_QUALITY)
-        currentQuality = VideoQuality.entries.firstOrNull { it.name == qName } ?: repo.defaultQuality
+        val requestedQuality = VideoQuality.entries.firstOrNull { it.name == qName } ?: repo.defaultQuality
 
         val item = repo.getItemById(itemId)
         if (item == null) {
@@ -87,6 +91,7 @@ class PlayerActivity : AppCompatActivity() {
             return
         }
         currentItem = item
+        currentQuality = item.normalizeQuality(requestedQuality)
 
         bindPauseMetadata(item)
         setupControls()
@@ -118,6 +123,9 @@ class PlayerActivity : AppCompatActivity() {
         } else {
             item.displayTitle
         }
+        baseHudTitle = titleText
+        playingVideoWidth = 0
+        playingVideoHeight = 0
         binding.pauseMovieTitle.text = titleText
         binding.hudBarTitle.text = titleText
 
@@ -215,6 +223,21 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         binding.pauseSeekBar.setOnKeyListener { _, keyCode, event ->
+            if ((keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) &&
+                event.action == KeyEvent.ACTION_DOWN
+            ) {
+                val exo = player ?: return@setOnKeyListener true
+                if (pendingSeekTargetMs >= 0L) {
+                    commitPendingSeek()
+                }
+                if (exo.isPlaying) {
+                    exo.pause()
+                } else {
+                    exo.play()
+                    hideAllOverlays()
+                }
+                return@setOnKeyListener true
+            }
             if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT || keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
                 val dir = if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) 1L else -1L
                 when (event.action) {
@@ -277,10 +300,11 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun populateSettingsPopup() {
-        // 1. Quality options
+        // 1. Quality options (filtered by actual video resolution so 720p hides 1080p!)
         binding.qualityOptionsContainer.removeAllViews()
+        val allowedQualities = currentItem?.supportedQualities() ?: VideoQuality.entries
         var firstFocus: View? = null
-        for (q in VideoQuality.entries) {
+        for (q in allowedQualities) {
             val active = q == currentQuality
             val row = buildMenuRow(
                 text = if (active) "●  ${q.label}" else "    ${q.label}",
@@ -429,6 +453,14 @@ class PlayerActivity : AppCompatActivity() {
                         }
                     }
                     Player.STATE_IDLE -> Unit
+                }
+            }
+
+            override fun onVideoSizeChanged(videoSize: VideoSize) {
+                if (videoSize.width > 0 && videoSize.height > 0) {
+                    playingVideoWidth = videoSize.width
+                    playingVideoHeight = videoSize.height
+                    binding.hudBarTitle.text = "$baseHudTitle  ·  ${videoSize.width}×${videoSize.height}"
                 }
             }
 
@@ -680,8 +712,14 @@ class PlayerActivity : AppCompatActivity() {
             }
             KeyEvent.KEYCODE_DPAD_CENTER,
             KeyEvent.KEYCODE_ENTER -> {
-                if (!controlsVisible && exo != null) {
-                    if (exo.isPlaying) exo.pause() else exo.play()
+                if (exo != null && (!controlsVisible || binding.pauseSeekBar.isFocused)) {
+                    if (pendingSeekTargetMs >= 0L) commitPendingSeek()
+                    if (exo.isPlaying) {
+                        exo.pause()
+                    } else {
+                        exo.play()
+                        hideAllOverlays()
+                    }
                     return true
                 }
             }

@@ -38,13 +38,13 @@ class DetailActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         itemId = intent.getStringExtra(EXTRA_ITEM_ID).orEmpty()
-        selectedQuality = repo.defaultQuality
 
         val item = repo.getItemById(itemId)
         if (item == null) {
             finish()
             return
         }
+        selectedQuality = item.normalizeQuality(repo.defaultQuality)
 
         render(item)
         setupButtons()
@@ -68,7 +68,8 @@ class DetailActivity : AppCompatActivity() {
         }
 
         binding.btnDetailQuality.setOnClickListener {
-            val all = VideoQuality.entries
+            val cur = repo.getItemById(itemId) ?: return@setOnClickListener
+            val all = cur.supportedQualities()
             val nextIdx = (all.indexOf(selectedQuality) + 1) % all.size
             selectedQuality = all[nextIdx]
             binding.btnDetailQuality.text = "Quality: ${selectedQuality.label}"

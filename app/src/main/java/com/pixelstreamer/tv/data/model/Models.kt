@@ -10,11 +10,11 @@ enum class AlbumType(val label: String) {
 }
 
 enum class VideoQuality(val label: String, val itag: Int?) {
-    AUTO("Auto (Best HD)", null),
+    AUTO("Auto (Best Quality)", null),
     Q1080P("1080p Full HD", 37),
     Q720P("720p HD", 22),
     Q360P("360p Data Saver", 18),
-    ORIGINAL("Original File", -1)
+    ORIGINAL("Original Source", -1)
 }
 
 data class AlbumSource(
@@ -149,6 +149,26 @@ data class MediaItem(
                 else -> "${s}s"
             }
         }
+
+    val supports1080p: Boolean
+        get() = width >= 1600 || height >= 960 || 37 in availableItags || 137 in availableItags
+
+    val supports720p: Boolean
+        get() = supports1080p || width >= 1100 || height >= 640 || 22 in availableItags || 136 in availableItags
+
+    fun supportedQualities(): List<VideoQuality> {
+        val list = mutableListOf(VideoQuality.AUTO)
+        if (supports1080p) list.add(VideoQuality.Q1080P)
+        if (supports720p) list.add(VideoQuality.Q720P)
+        list.add(VideoQuality.Q360P)
+        list.add(VideoQuality.ORIGINAL)
+        return list
+    }
+
+    fun normalizeQuality(requested: VideoQuality): VideoQuality {
+        val supported = supportedQualities()
+        return if (requested in supported) requested else VideoQuality.AUTO
+    }
 }
 
 data class ShowGroup(
