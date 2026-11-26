@@ -6,7 +6,7 @@
         android:name="android.hardware.touchscreen"
         android:required="true" />
 
-    <application>
+    <application android:resizeableActivity="true">
         <activity
             android:name=".ui.home.HomeActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize"
@@ -27,7 +27,9 @@
 
         <activity
             android:name=".ui.player.PlayerActivity"
+            android:resizeableActivity="true"
             android:screenOrientation="sensorLandscape"
+            android:supportsPictureInPicture="true"
             tools:replace="android:screenOrientation" />
 
         <activity

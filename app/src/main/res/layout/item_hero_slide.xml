@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:clipChildren="false"
+    android:clipToPadding="false"
+    android:orientation="vertical"
+    android:paddingStart="38dp"
+    android:paddingEnd="38dp">
+
+    <TextView
+        android:id="@+id/heroSlideBadge"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="6dp"
+        android:background="@drawable/bg_badge_outline"
+        android:paddingStart="8dp"
+        android:paddingTop="2dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="2dp"
+        android:text="CONTINUE WATCHING"
+        android:textColor="@color/ps_accent"
+        android:textSize="10sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+
+    <ImageView
+        android:id="@+id/heroTitleLogo"
+        android:layout_width="360dp"
+        android:layout_height="76dp"
+        android:layout_marginBottom="6dp"
+        android:adjustViewBounds="true"
+        android:contentDescription="@null"
+        android:scaleType="fitStart"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/heroTitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:ellipsize="end"
+        android:fontFamily="@font/pixel_bold"
+        android:maxLines="2"
+        android:maxWidth="560dp"
+        android:text="Your Personal Cinema"
+        android:textColor="#FFFFFF"
+        android:textSize="28sp" />
+
+    <TextView
+        android:id="@+id/heroMeta"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="3dp"
+        android:text="Shared Google Photos · No Sign-In Required"
+        android:textColor="#D0D0D8"
+        android:textSize="13sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/heroOverview"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="5dp"
+        android:ellipsize="end"
+        android:lineSpacingMultiplier="1.15"
+        android:maxLines="2"
+        android:maxWidth="500dp"
+        android:text="Share any Google Photos album containing movies, shows, or photos to stream in sleek cinema mode."
+        android:textColor="#B0B0B8"
+        android:textSize="13sp" />
+
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btnHeroPlay"
+            android:layout_width="wrap_content"
+            android:layout_height="38dp"
+            android:background="@drawable/bg_pill_white"
+            android:focusable="true"
+            android:nextFocusUp="@id/navHome"
+            android:paddingStart="22dp"
+            android:paddingEnd="22dp"
+            android:text="▶  Play"
+            android:textAllCaps="false"
+            android:textColor="#111115"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnHeroDetails"
+            android:layout_width="wrap_content"
+            android:layout_height="38dp"
+            android:layout_marginStart="10dp"
+            android:background="@drawable/bg_pill_glass"
+            android:focusable="true"
+            android:nextFocusUp="@id/navHome"
+            android:paddingStart="18dp"
+            android:paddingEnd="18dp"
+            android:text="ⓘ  More Info"
+            android:textAllCaps="false"
+            android:textColor="#FFFFFF"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+</LinearLayout>

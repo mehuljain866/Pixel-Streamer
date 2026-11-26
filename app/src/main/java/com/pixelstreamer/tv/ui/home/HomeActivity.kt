@@ -15,6 +15,7 @@ import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.pixelstreamer.tv.PixelStreamerApp
 import com.pixelstreamer.tv.R
+import com.pixelstreamer.tv.data.model.HeroSlide
 import com.pixelstreamer.tv.data.model.MediaItem
 import com.pixelstreamer.tv.data.model.RowStyle
 import com.pixelstreamer.tv.data.model.ShowGroup
@@ -41,8 +42,10 @@ class HomeActivity : AppCompatActivity() {
 
     private var currentTab = "HOME"
     private var sortAZ = false
-    private var heroItem: MediaItem? = null
-    private var heroShow: ShowGroup? = null
+    private val heroRandomSeed = System.currentTimeMillis()
+    private var currentHeroSlides: List<HeroUiState> = emptyList()
+    private var currentHeroIndex: Int = 0
+    private var lastTopContinueId: String? = null
     private var quickResumeTarget: MediaItem? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -100,10 +103,18 @@ class HomeActivity : AppCompatActivity() {
 
     private fun setupRecycler() {
         rowAdapter = RowAdapter(
-            onHeroFocused = { scrollHomeToTop() },
-            onHeroPlayClicked = { handleHeroPlayClick() },
-            onHeroDetailsClicked = { handleHeroDetailsClick() },
-            onItemFocused = { item -> updateHeroForItem(item) },
+            onHeroFocused = {
+                scrollHomeToTop()
+                currentHeroSlides.getOrNull(currentHeroIndex)?.let { applyHeroBackdrop(it) }
+            },
+            onHeroSlideSelected = { slide ->
+                val idx = currentHeroSlides.indexOfFirst { it.id == slide.id }
+                if (idx >= 0) currentHeroIndex = idx
+                applyHeroBackdrop(slide)
+            },
+            onHeroPlayClicked = { slide -> handleHeroPlayClick(slide) },
+            onHeroDetailsClicked = { slide -> handleHeroDetailsClick(slide) },
+            onItemFocused = { item -> previewBackdropForItem(item) },
             onItemClicked = { item, style ->
                 if (style == RowStyle.CONTINUE_WATCHING) {
                     showQuickResume(item)
@@ -111,7 +122,7 @@ class HomeActivity : AppCompatActivity() {
                     openMediaItem(item)
                 }
             },
-            onShowFocused = { show -> updateHeroForShow(show) },
+            onShowFocused = { show -> previewBackdropForShow(show) },
             onShowClicked = { show -> openShow(show) }
         )
         binding.rowsRecycler.layoutManager = LinearLayoutManager(this)
@@ -187,32 +198,29 @@ class HomeActivity : AppCompatActivity() {
         }
     }
 
-    private fun handleHeroPlayClick() {
-        val show = heroShow
-        val target = heroItem
+    private fun handleHeroPlayClick(slide: HeroUiState) {
+        val target = slide.item
+        val show = slide.show
         when {
+            target != null && target.isVideo -> {
+                val prog = repo.progressMap.value[target.id]
+                val startMs = if (prog != null && prog.isInProgress) prog.positionMs else 0L
+                launchPlayer(target.id, startMs)
+            }
             show != null -> {
                 val ep = show.nextUpEpisode
                 val prog = repo.progressMap.value[ep.id]
                 val startMs = if (prog != null && prog.isInProgress) prog.positionMs else 0L
                 launchPlayer(ep.id, startMs)
             }
-            target != null -> {
-                if (target.isVideo) {
-                    val prog = repo.progressMap.value[target.id]
-                    val startMs = if (prog != null && prog.isInProgress) prog.positionMs else 0L
-                    launchPlayer(target.id, startMs)
-                } else {
-                    openMediaItem(target)
-                }
-            }
+            target != null -> openMediaItem(target)
             else -> startActivity(Intent(this, AlbumsActivity::class.java))
         }
     }
 
-    private fun handleHeroDetailsClick() {
-        val show = heroShow
-        val target = heroItem
+    private fun handleHeroDetailsClick(slide: HeroUiState) {
+        val show = slide.show
+        val target = slide.item
         when {
             show != null -> openShow(show)
             target != null -> openMediaItem(target)
@@ -338,7 +346,17 @@ class HomeActivity : AppCompatActivity() {
     private fun refreshHomeTab() {
         val rows = repo.buildHomeRows()
         val progress = repo.progressMap.value
-        rowAdapter.submit(rows, progress)
+        val slides = repo.buildHeroSlides(randomSeed = heroRandomSeed).map { buildHeroUiState(it) }
+        val topCwId = slides.firstOrNull { it.isContinueWatching }?.id
+        if (topCwId != null && topCwId != lastTopContinueId) {
+            currentHeroIndex = 0
+            lastTopContinueId = topCwId
+        } else if (currentHeroIndex !in slides.indices) {
+            currentHeroIndex = 0
+        }
+        currentHeroSlides = slides
+
+        rowAdapter.submit(rows, progress, slides, currentHeroIndex)
 
         val wasEmptyVisible = binding.emptyStateContainer.visibility == View.VISIBLE
         val hasContent = rows.isNotEmpty()
@@ -351,15 +369,7 @@ class HomeActivity : AppCompatActivity() {
                     (binding.rowsRecycler.findViewHolderForAdapterPosition(0) as? RowAdapter.HeroVH)?.focusPlay()
                 }
             }
-            val firstShow = rows.firstOrNull { it.shows.isNotEmpty() }?.shows?.firstOrNull()
-            val firstItem = rows.firstOrNull { it.items.isNotEmpty() }?.items?.firstOrNull()
-            if (heroItem == null && heroShow == null) {
-                if (firstItem != null) updateHeroForItem(firstItem)
-                else if (firstShow != null) updateHeroForShow(firstShow)
-            } else if (heroItem != null) {
-                repo.getItemById(heroItem!!.id)?.let { updateHeroForItem(it) }
-                    ?: firstItem?.let { updateHeroForItem(it) }
-            }
+            slides.getOrNull(currentHeroIndex)?.let { applyHeroBackdrop(it) }
         } else {
             showWelcomeHero()
         }
@@ -433,88 +443,120 @@ class HomeActivity : AppCompatActivity() {
     }
 
     private fun showWelcomeHero() {
-        heroItem = null
-        heroShow = null
+        currentHeroSlides = emptyList()
+        currentHeroIndex = 0
         binding.heroBackdrop.setImageResource(R.color.nf_bg)
     }
 
-    private fun updateHeroForItem(item: MediaItem) {
-        heroItem = item
-        heroShow = null
+    private fun applyHeroBackdrop(slide: HeroUiState) {
+        val primary = slide.backdropUrl.orEmpty()
+        if (primary.isNotBlank() || !slide.fallbackBackdropUrl.isNullOrBlank()) {
+            binding.heroBackdrop.loadUrlWithFallback(
+                primaryUrl = primary,
+                fallbackUrl = slide.fallbackBackdropUrl
+            )
+        } else {
+            binding.heroBackdrop.setImageResource(R.color.nf_bg)
+        }
+    }
+
+    private fun previewBackdropForItem(item: MediaItem) {
         binding.heroBackdrop.loadUrlWithFallback(
             primaryUrl = item.backdropImageUrl,
             fallbackUrl = item.thumbnailUrl(1280, 720)
         )
-
-        val meta = item.movieMetadata
-        val parts = mutableListOf<String>()
-        meta?.year?.let { parts.add(it.toString()) }
-        if (item.displayDuration.isNotBlank()) parts.add(item.displayDuration)
-        else meta?.runtimeMinutes?.let { parts.add("${it}m") }
-        meta?.rating?.let { parts.add("★ ${"%.1f".format(it)}") }
-        if (meta?.contentRating?.isNotBlank() == true) parts.add(meta.contentRating)
-        if (meta?.genres?.isNotEmpty() == true) parts.add(meta.genres.take(2).joinToString(" · "))
-        if (parts.isEmpty()) {
-            parts.add(if (item.isVideo) "${item.width}×${item.height}" else "Photo")
-        }
-
-        val overview = when {
-            item.isEpisode && item.episodeOverview.isNotBlank() -> item.episodeOverview
-            meta?.overview?.isNotBlank() == true -> meta.overview
-            item.caption.isNotBlank() && !item.caption.contains("_1080p", true) && !item.caption.endsWith(".mp4", true) -> item.caption
-            else -> if (item.isVideo) "Stream directly from your shared Google Photos library." else "Shared Google Photos gallery."
-        }
-
-        val prog = repo.progressMap.value[item.id]
-        val playLabel = when {
-            !item.isVideo -> "▶  View Photo"
-            prog != null && prog.isInProgress -> "▶  Resume"
-            else -> "▶  Play"
-        }
-
-        rowAdapter.updateHero(
-            HeroUiState(
-                title = item.displayTitle,
-                titleLogoUrl = item.titleLogoUrl,
-                meta = parts.joinToString("   •   "),
-                overview = overview,
-                playLabel = playLabel,
-                showDetailsButton = true
-            ),
-            binding.rowsRecycler
-        )
     }
 
-    private fun updateHeroForShow(show: ShowGroup) {
-        heroShow = show
-        heroItem = null
+    private fun previewBackdropForShow(show: ShowGroup) {
         binding.heroBackdrop.loadUrlWithFallback(
             primaryUrl = show.backdropUrl.orEmpty(),
             fallbackUrl = show.posterUrl
         )
+    }
 
-        val parts = mutableListOf<String>()
-        show.year?.let { parts.add(it.toString()) }
-        parts.add("${show.seasonCount} Season${if (show.seasonCount == 1) "" else "s"}")
-        parts.add("${show.episodeCount} Episodes")
-        show.rating?.let { parts.add("★ ${"%.1f".format(it)}") }
-        if (show.genres.isNotEmpty()) parts.add(show.genres.take(2).joinToString(" · "))
+    private fun buildHeroUiState(slide: HeroSlide): HeroUiState {
+        val item = slide.item
+        val show = slide.show
+        if (show != null && item == null) {
+            val parts = mutableListOf<String>()
+            show.year?.let { parts.add(it.toString()) }
+            parts.add("${show.seasonCount} Season${if (show.seasonCount == 1) "" else "s"}")
+            parts.add("${show.episodeCount} Episodes")
+            show.rating?.let { parts.add("★ ${"%.1f".format(it)}") }
+            if (show.genres.isNotEmpty()) parts.add(show.genres.take(2).joinToString(" · "))
 
-        val ep = show.nextUpEpisode
-        val prog = repo.progressMap.value[ep.id]
-        val code = ep.episodeCode.ifBlank { "E01" }
-        val playLabel = if (prog != null && prog.isInProgress) "▶  Resume $code" else "▶  Play $code"
+            val ep = show.nextUpEpisode
+            val prog = repo.progressMap.value[ep.id]
+            val code = ep.episodeCode.ifBlank { "E01" }
+            val playLabel = if (prog != null && prog.isInProgress) "▶  Resume $code" else "▶  Play $code"
 
-        rowAdapter.updateHero(
-            HeroUiState(
+            return HeroUiState(
+                id = slide.id,
+                badgeText = if (slide.isContinueWatching) "CONTINUE WATCHING" else "RECOMMENDED",
+                isContinueWatching = slide.isContinueWatching,
                 title = show.title,
                 titleLogoUrl = show.logoUrl,
                 meta = parts.joinToString("   •   "),
                 overview = show.overview,
                 playLabel = playLabel,
-                showDetailsButton = true
-            ),
-            binding.rowsRecycler
+                showDetailsButton = true,
+                backdropUrl = show.backdropUrl,
+                fallbackBackdropUrl = show.posterUrl,
+                show = show
+            )
+        }
+
+        val target = item ?: return HeroUiState()
+        val meta = target.movieMetadata
+        val parts = mutableListOf<String>()
+        if (target.isEpisode && target.episodeCode.isNotBlank()) parts.add(target.episodeCode)
+        meta?.year?.let { parts.add(it.toString()) }
+        if (target.displayDuration.isNotBlank()) parts.add(target.displayDuration)
+        else meta?.runtimeMinutes?.let { parts.add("${it}m") }
+        meta?.rating?.let { parts.add("★ ${"%.1f".format(it)}") }
+        if (meta?.contentRating?.isNotBlank() == true) parts.add(meta.contentRating)
+        if (meta?.genres?.isNotEmpty() == true) parts.add(meta.genres.take(2).joinToString(" · "))
+        if (parts.isEmpty()) {
+            parts.add(if (target.isVideo) "${target.width}×${target.height}" else "Photo")
+        }
+
+        val overview = when {
+            target.isEpisode && target.episodeOverview.isNotBlank() -> target.episodeOverview
+            meta?.overview?.isNotBlank() == true -> meta.overview
+            target.caption.isNotBlank() && !target.caption.contains("_1080p", true) && !target.caption.endsWith(".mp4", true) -> target.caption
+            else -> if (target.isVideo) "Stream directly from your shared Google Photos library." else "Shared Google Photos gallery."
+        }
+
+        val prog = repo.progressMap.value[target.id]
+        val playLabel = when {
+            !target.isVideo -> "▶  View Photo"
+            prog != null && prog.isInProgress -> {
+                val rem = prog.remainingText
+                if (rem.isNotBlank()) "▶  Resume · $rem" else "▶  Resume"
+            }
+            else -> "▶  Play"
+        }
+
+        val badge = when {
+            slide.isContinueWatching -> "CONTINUE WATCHING"
+            target.isVideo -> "RECOMMENDED"
+            else -> ""
+        }
+
+        return HeroUiState(
+            id = slide.id,
+            badgeText = badge,
+            isContinueWatching = slide.isContinueWatching,
+            title = if (target.isEpisode && show != null) show.title else target.displayTitle,
+            titleLogoUrl = show?.logoUrl ?: target.titleLogoUrl,
+            meta = parts.joinToString("   •   "),
+            overview = overview,
+            playLabel = playLabel,
+            showDetailsButton = true,
+            backdropUrl = target.backdropImageUrl,
+            fallbackBackdropUrl = show?.posterUrl ?: target.thumbnailUrl(1280, 720),
+            item = target,
+            show = show
         )
     }
 

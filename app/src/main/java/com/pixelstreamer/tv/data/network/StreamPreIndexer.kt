@@ -129,7 +129,7 @@ class StreamPreIndexer(
         private const val WARM_URL_TTL_MS = 15L * 60L * 1000L
 
         fun cacheKeyFor(item: MediaItem, quality: VideoQuality): String {
-            return "ps_${item.id}_${quality.name}_${item.baseUrl.hashCode()}"
+            return "ps2_${item.id}_${quality.name}_${item.baseUrl.hashCode()}"
         }
 
         /**

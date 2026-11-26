@@ -1,9 +1,21 @@
 package com.pixelstreamer.tv.ui.player
 
+import android.app.PendingIntent
+import android.app.PictureInPictureParams
+import android.app.RemoteAction
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Color
+import android.graphics.drawable.Icon
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Rational
 import android.view.GestureDetector
 import android.view.Gravity
 import android.view.KeyEvent
@@ -15,27 +27,33 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.annotation.OptIn
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MediaItem as ExoMediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import coil.load
+import com.pixelstreamer.tv.BuildConfig
 import com.pixelstreamer.tv.PixelStreamerApp
 import com.pixelstreamer.tv.R
 import com.pixelstreamer.tv.data.model.MediaItem
 import com.pixelstreamer.tv.data.model.VideoQuality
-import com.pixelstreamer.tv.data.network.GooglePhotosAlbumScraper
 import com.pixelstreamer.tv.data.network.StreamPreIndexer
 import com.pixelstreamer.tv.databinding.ActivityPlayerBinding
 import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit
+import kotlin.math.roundToInt
 
 @OptIn(UnstableApi::class)
 class PlayerActivity : AppCompatActivity() {
@@ -47,13 +65,16 @@ class PlayerActivity : AppCompatActivity() {
     private var player: ExoPlayer? = null
     private var currentItem: MediaItem? = null
     private var resumePositionMs: Long = 0L
+    private var activeResumeTargetMs: Long = 0L
     private var currentQuality: VideoQuality = VideoQuality.AUTO
     private var playbackSpeed: Float = 1.0f
     private var fillScreen: Boolean = false
 
     private var isScrubbing = false
     private var triedOriginalFallback = false
+    private var triedTranscodedFallback = false
     private var hasStartedPlayback = false
+    private var streamRangeSupported = true
 
     private var pendingSeekTargetMs: Long = -1L
     private var isAwaitingSeekReady = false
@@ -63,6 +84,16 @@ class PlayerActivity : AppCompatActivity() {
     private var playingVideoHeight: Int = 0
     private var baseHudTitle: String = ""
 
+    private val pipActionReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != ACTION_PIP_TOGGLE_PLAY) return
+            val exo = player ?: return
+            if (exo.isPlaying) exo.pause() else exo.play()
+            updatePipParamsIfActive()
+        }
+    }
+    private var pipReceiverRegistered = false
+
     private val handler = Handler(Looper.getMainLooper())
     private val autoHideControlsRunnable = Runnable {
         if (player?.isPlaying == true && binding.settingsPopupOverlay.visibility != View.VISIBLE) {
@@ -70,6 +101,7 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
     private val commitSeekRunnable = Runnable { commitPendingSeek() }
+    private val bufferingWatchdogRunnable = Runnable { handleBufferingTimeout() }
     private val progressTickRunnable = object : Runnable {
         override fun run() {
             updateTimeUi()
@@ -82,6 +114,17 @@ class PlayerActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityPlayerBinding.inflate(layoutInflater)
         setContentView(binding.root)
+
+        applyImmersiveAndInsets()
+        if (BuildConfig.IS_TABLET && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            ContextCompat.registerReceiver(
+                this,
+                pipActionReceiver,
+                IntentFilter(ACTION_PIP_TOGGLE_PLAY),
+                ContextCompat.RECEIVER_NOT_EXPORTED
+            )
+            pipReceiverRegistered = true
+        }
 
         val itemId = intent.getStringExtra(EXTRA_ITEM_ID).orEmpty()
         resumePositionMs = intent.getLongExtra(EXTRA_RESUME_MS, 0L)
@@ -101,14 +144,122 @@ class PlayerActivity : AppCompatActivity() {
         initPlayerAndStart(item, resumePositionMs)
     }
 
+    private fun applyImmersiveAndInsets() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        val controller = WindowCompat.getInsetsController(window, binding.root)
+        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller.hide(WindowInsetsCompat.Type.systemBars())
+
+        val baseSide = (48 * resources.displayMetrics.density).roundToInt()
+        val baseTop = (32 * resources.displayMetrics.density).roundToInt()
+        val baseBottom = (22 * resources.displayMetrics.density).roundToInt()
+        ViewCompat.setOnApplyWindowInsetsListener(binding.controlsBottomInner) { v, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+            v.setPadding(
+                baseSide + bars.left,
+                baseTop,
+                baseSide + bars.right,
+                baseBottom + bars.bottom
+            )
+            insets
+        }
+    }
+
+    private fun isCurrentlyInPip(): Boolean {
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode
+    }
+
+    private fun canEnterPipMode(): Boolean {
+        return BuildConfig.IS_TABLET &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
+    }
+
+    private fun buildPipParams(): PictureInPictureParams? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return null
+        val (rw, rh) = computeSafePipAspectRatio(playingVideoWidth, playingVideoHeight)
+        val isPlaying = player?.isPlaying == true
+        val iconRes = if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play
+        val label = if (isPlaying) "Pause" else "Play"
+        val pendingIntent = PendingIntent.getBroadcast(
+            this,
+            101,
+            Intent(ACTION_PIP_TOGGLE_PLAY).setPackage(packageName),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val action = RemoteAction(
+            Icon.createWithResource(this, iconRes),
+            label,
+            label,
+            pendingIntent
+        )
+        return PictureInPictureParams.Builder()
+            .setAspectRatio(Rational(rw, rh))
+            .setActions(listOf(action))
+            .build()
+    }
+
+    private fun updatePipParamsIfActive() {
+        if (isCurrentlyInPip() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            buildPipParams()?.let { runCatching { setPictureInPictureParams(it) } }
+        }
+    }
+
+    private fun enterPipMode() {
+        if (!canEnterPipMode() || isCurrentlyInPip()) return
+        val params = buildPipParams() ?: return
+        hideAllOverlays()
+        binding.loadingOverlay.visibility = View.GONE
+        runCatching { enterPictureInPictureMode(params) }
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (BuildConfig.IS_TABLET && canEnterPipMode() && player?.isPlaying == true && !isFinishing) {
+            enterPipMode()
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        if (isInPictureInPictureMode) {
+            hideAllOverlays()
+            binding.loadingOverlay.visibility = View.GONE
+        } else {
+            updateTimeUi()
+            val playing = player?.isPlaying == true
+            binding.btnPauseResume.setImageResource(if (playing) R.drawable.ic_pause else R.drawable.ic_play)
+            if (!playing && player?.playbackState == Player.STATE_READY) {
+                showPausedUi()
+            }
+        }
+    }
+
     override fun onPause() {
         super.onPause()
         persistProgress()
-        player?.pause()
+        if (!isCurrentlyInPip()) {
+            player?.pause()
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        persistProgress()
+        if (!isChangingConfigurations) {
+            player?.pause()
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        if (pipReceiverRegistered) {
+            runCatching { unregisterReceiver(pipActionReceiver) }
+            pipReceiverRegistered = false
+        }
         handler.removeCallbacksAndMessages(null)
         persistProgress()
         binding.playerView.player = null
@@ -202,6 +353,11 @@ class PlayerActivity : AppCompatActivity() {
             scheduleControlsAutoHide()
         }
 
+        binding.btnPausePip.visibility = if (canEnterPipMode()) View.VISIBLE else View.GONE
+        binding.btnPausePip.setOnClickListener {
+            enterPipMode()
+        }
+
         binding.btnPauseSettings.setOnClickListener {
             openSettingsPopup()
         }
@@ -221,6 +377,15 @@ class PlayerActivity : AppCompatActivity() {
             finish()
         }
 
+        binding.controlsOverlay.setOnTouchListener { _, event ->
+            if (event.action == MotionEvent.ACTION_DOWN) {
+                handler.removeCallbacks(autoHideControlsRunnable)
+            } else if (event.action == MotionEvent.ACTION_UP) {
+                scheduleControlsAutoHide()
+            }
+            false
+        }
+
         val playerGestureDetector = GestureDetector(
             this,
             object : GestureDetector.SimpleOnGestureListener() {
@@ -233,12 +398,21 @@ class PlayerActivity : AppCompatActivity() {
                     }
                     val exo = player ?: return true
                     val controlsVisible = binding.controlsOverlay.visibility == View.VISIBLE
-                    if (exo.isPlaying) {
-                        if (controlsVisible) hideAllOverlays()
-                        else showTimelineHudOnly(focusTimeline = false)
-                    } else {
-                        exo.play()
-                        hideAllOverlays()
+                    val isBufferingOrIdle =
+                        exo.playbackState == Player.STATE_BUFFERING || exo.playbackState == Player.STATE_IDLE
+                    when {
+                        isBufferingOrIdle || exo.isPlaying -> {
+                            if (controlsVisible) hideAllOverlays()
+                            else showTimelineHudOnly(focusTimeline = false)
+                        }
+                        else -> {
+                            if (controlsVisible) {
+                                exo.play()
+                                hideAllOverlays()
+                            } else {
+                                showPausedUi()
+                            }
+                        }
                     }
                     return true
                 }
@@ -362,9 +536,10 @@ class PlayerActivity : AppCompatActivity() {
             ) {
                 closeSettingsPopup()
                 if (q != currentQuality) {
-                    val pos = player?.currentPosition ?: 0L
+                    val pos = player?.currentPosition?.coerceAtLeast(0L) ?: 0L
                     currentQuality = q
                     triedOriginalFallback = false
+                    triedTranscodedFallback = false
                     currentItem?.let { loadStream(it, pos) }
                 }
             }
@@ -453,13 +628,16 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun initPlayerAndStart(item: MediaItem, startPositionMs: Long) {
         val dataSourceFactory = app.preIndexer.buildCacheDataSourceFactory()
+        val extractorsFactory = DefaultExtractorsFactory()
+            .setConstantBitrateSeekingEnabled(true)
+            .setConstantBitrateSeekingAlwaysEnabled(true)
 
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(15_000, 45_000, 300, 1_000)
             .build()
 
         val exo = ExoPlayer.Builder(this)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory, extractorsFactory))
             .setLoadControl(loadControl)
             .build()
 
@@ -472,16 +650,36 @@ class PlayerActivity : AppCompatActivity() {
                         } else if (binding.controlsOverlay.visibility == View.VISIBLE) {
                             binding.hudBufferSpinner.visibility = View.VISIBLE
                         }
+                        handler.removeCallbacks(bufferingWatchdogRunnable)
+                        handler.postDelayed(bufferingWatchdogRunnable, BUFFERING_WATCHDOG_MS)
                     }
                     Player.STATE_READY -> {
+                        handler.removeCallbacks(bufferingWatchdogRunnable)
+                        val active = currentItem
+                        val intendSeekOrResume =
+                            (isAwaitingSeekReady && expectedSeekPosMs > 5_000L) || activeResumeTargetMs > 5_000L
+                        if (active != null &&
+                            !exo.isCurrentMediaItemSeekable &&
+                            intendSeekOrResume &&
+                            !triedTranscodedFallback
+                        ) {
+                            val recoverPos = if (isAwaitingSeekReady && expectedSeekPosMs >= 0L) {
+                                expectedSeekPosMs
+                            } else {
+                                activeResumeTargetMs
+                            }
+                            if (tryFallbackToTranscoded(recoverPos)) return
+                        }
                         hasStartedPlayback = true
                         isAwaitingSeekReady = false
                         expectedSeekPosMs = -1L
                         binding.loadingOverlay.visibility = View.GONE
                         binding.hudBufferSpinner.visibility = View.GONE
                         updateTimeUi()
+                        updatePipParamsIfActive()
                     }
                     Player.STATE_ENDED -> {
+                        handler.removeCallbacks(bufferingWatchdogRunnable)
                         isAwaitingSeekReady = false
                         persistProgress(forceEnded = true)
                         val cur = currentItem
@@ -497,7 +695,9 @@ class PlayerActivity : AppCompatActivity() {
                             showPausedUi()
                         }
                     }
-                    Player.STATE_IDLE -> Unit
+                    Player.STATE_IDLE -> {
+                        handler.removeCallbacks(bufferingWatchdogRunnable)
+                    }
                 }
             }
 
@@ -506,38 +706,50 @@ class PlayerActivity : AppCompatActivity() {
                     playingVideoWidth = videoSize.width
                     playingVideoHeight = videoSize.height
                     binding.hudBarTitle.text = "$baseHudTitle  ·  ${videoSize.width}×${videoSize.height}"
+                    updatePipParamsIfActive()
                 }
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 binding.btnPauseResume.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
+                updatePipParamsIfActive()
                 if (isPlaying) {
                     binding.pauseInfoOverlay.visibility = View.GONE
                     scheduleControlsAutoHide()
-                } else if (exo.playbackState == Player.STATE_READY) {
+                } else if (exo.playbackState == Player.STATE_READY && !isCurrentlyInPip()) {
                     showPausedUi()
                 }
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                handler.removeCallbacks(bufferingWatchdogRunnable)
                 isAwaitingSeekReady = false
                 val active = currentItem
-                if (active != null && !triedOriginalFallback && currentQuality != VideoQuality.ORIGINAL) {
-                    triedOriginalFallback = true
-                    Toast.makeText(
-                        this@PlayerActivity,
-                        "Switching to original stream...",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                    loadStream(active, exo.currentPosition.coerceAtLeast(startPositionMs), forceOriginal = true)
-                } else {
-                    binding.loadingOverlay.visibility = View.GONE
-                    Toast.makeText(
-                        this@PlayerActivity,
-                        "Playback failed: ${error.localizedMessage ?: "Stream unavailable"}",
-                        Toast.LENGTH_LONG
-                    ).show()
-                    showPausedUi()
+                val fallbackPos = maxOf(exo.currentPosition, activeResumeTargetMs).coerceAtLeast(0L)
+                when {
+                    active != null &&
+                        (currentQuality == VideoQuality.ORIGINAL || triedOriginalFallback) &&
+                        !triedTranscodedFallback &&
+                        tryFallbackToTranscoded(fallbackPos) -> Unit
+                    active != null && !triedOriginalFallback && currentQuality != VideoQuality.ORIGINAL -> {
+                        triedOriginalFallback = true
+                        Toast.makeText(
+                            this@PlayerActivity,
+                            "Switching to original stream...",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        loadStream(active, fallbackPos, overrideQuality = VideoQuality.ORIGINAL)
+                    }
+                    else -> {
+                        binding.loadingOverlay.visibility = View.GONE
+                        binding.hudBufferSpinner.visibility = View.GONE
+                        Toast.makeText(
+                            this@PlayerActivity,
+                            "Playback failed: ${error.localizedMessage ?: "Stream unavailable"}",
+                            Toast.LENGTH_LONG
+                        ).show()
+                        showPausedUi()
+                    }
                 }
             }
         })
@@ -551,8 +763,10 @@ class PlayerActivity : AppCompatActivity() {
     private fun switchToItem(next: MediaItem) {
         currentItem = next
         resumePositionMs = 0L
+        activeResumeTargetMs = 0L
         hasStartedPlayback = false
         triedOriginalFallback = false
+        triedTranscodedFallback = false
         isAwaitingSeekReady = false
         pendingSeekTargetMs = -1L
         currentQuality = next.normalizeQuality(currentQuality)
@@ -561,21 +775,68 @@ class PlayerActivity : AppCompatActivity() {
         loadStream(next, 0L)
     }
 
-    private fun loadStream(item: MediaItem, startPositionMs: Long, forceOriginal: Boolean = false) {
+    private fun tryFallbackToTranscoded(positionMs: Long): Boolean {
+        val active = currentItem ?: return false
+        if (triedTranscodedFallback) return false
+        val nextQuality = when {
+            currentQuality != VideoQuality.Q720P -> VideoQuality.Q720P
+            active.supports1080p -> VideoQuality.Q1080P
+            else -> VideoQuality.Q360P
+        }
+        triedTranscodedFallback = true
+        currentQuality = nextQuality
+        Toast.makeText(
+            this,
+            "Switching to ${nextQuality.label} for faster seek & playback...",
+            Toast.LENGTH_SHORT
+        ).show()
+        loadStream(active, positionMs.coerceAtLeast(0L), overrideQuality = nextQuality)
+        return true
+    }
+
+    private fun handleBufferingTimeout() {
+        val exo = player ?: return
+        if (exo.playbackState != Player.STATE_BUFFERING || isFinishing) return
+        val recoverPos = if (isAwaitingSeekReady && expectedSeekPosMs >= 0L) {
+            expectedSeekPosMs
+        } else {
+            maxOf(exo.currentPosition, activeResumeTargetMs).coerceAtLeast(0L)
+        }
+        if (tryFallbackToTranscoded(recoverPos)) return
+
+        isAwaitingSeekReady = false
+        binding.loadingOverlay.visibility = View.GONE
+        binding.hudBufferSpinner.visibility = View.GONE
+        showTimelineHudOnly(focusTimeline = false)
+        Toast.makeText(
+            this,
+            "Stream is taking long to buffer — tap Settings to change quality or restart",
+            Toast.LENGTH_LONG
+        ).show()
+    }
+
+    private fun loadStream(
+        item: MediaItem,
+        startPositionMs: Long,
+        overrideQuality: VideoQuality? = null
+    ) {
+        handler.removeCallbacks(bufferingWatchdogRunnable)
         hasStartedPlayback = false
         isAwaitingSeekReady = false
         pendingSeekTargetMs = -1L
+        activeResumeTargetMs = startPositionMs.coerceAtLeast(0L)
         binding.loadingOverlay.visibility = View.VISIBLE
         lifecycleScope.launch {
             try {
-                val qualityToUse = if (forceOriginal) VideoQuality.ORIGINAL else currentQuality
-                val streamUrl = repo.resolveFreshPlaybackUrl(item, qualityToUse)
+                val qualityToUse = overrideQuality ?: currentQuality
+                val streamInfo = repo.resolveFreshStreamInfo(item, qualityToUse)
+                streamRangeSupported = streamInfo.rangeSupported
                 val exo = player ?: return@launch
                 val exoItem = ExoMediaItem.Builder()
-                    .setUri(streamUrl)
+                    .setUri(streamInfo.url)
                     .setCustomCacheKey(StreamPreIndexer.cacheKeyFor(item, qualityToUse))
                     .build()
-                exo.setMediaItem(exoItem, startPositionMs)
+                exo.setMediaItem(exoItem, activeResumeTargetMs)
                 exo.setPlaybackSpeed(playbackSpeed)
                 exo.prepare()
                 exo.playWhenReady = true
@@ -634,7 +895,10 @@ class PlayerActivity : AppCompatActivity() {
     private fun effectiveDurationMs(): Long {
         val exoDur = player?.duration?.takeIf { it > 0L } ?: 0L
         if (exoDur > 0L) return exoDur
-        return currentItem?.durationMs?.takeIf { it > 0L } ?: 0L
+        val itemDur = currentItem?.durationMs?.takeIf { it > 0L } ?: 0L
+        if (itemDur > 0L) return itemDur
+        val metaMins = currentItem?.movieMetadata?.runtimeMinutes ?: 0
+        return if (metaMins > 0) metaMins * 60_000L else 0L
     }
 
     private fun stepForRepeat(repeatCount: Int): Long = when {
@@ -651,8 +915,7 @@ class PlayerActivity : AppCompatActivity() {
             isAwaitingSeekReady && expectedSeekPosMs >= 0L -> expectedSeekPosMs
             else -> exo.currentPosition.coerceAtLeast(0L)
         }
-        val maxTarget = if (dur > 0L) (dur - 1000L).coerceAtLeast(0L) else Long.MAX_VALUE
-        val target = (basePos + deltaMs).coerceIn(0L, maxTarget)
+        val target = computeSeekTargetMs(basePos, deltaMs, dur)
         pendingSeekTargetMs = target
 
         if (binding.controlsOverlay.visibility != View.VISIBLE) {
@@ -660,7 +923,7 @@ class PlayerActivity : AppCompatActivity() {
         }
         binding.pauseTimeDisplay.text = "${formatTime(target)} / ${formatTime(dur)}"
         if (dur > 0L) {
-            binding.pauseSeekBar.progress = ((target * 1000L) / dur).toInt().coerceIn(0, 1000)
+            binding.pauseSeekBar.progress = computeProgressPermille(target, dur)
         }
 
         handler.removeCallbacks(commitSeekRunnable)
@@ -671,8 +934,7 @@ class PlayerActivity : AppCompatActivity() {
         val exo = player ?: return
         val dur = effectiveDurationMs()
         val basePos = if (isAwaitingSeekReady && expectedSeekPosMs >= 0L) expectedSeekPosMs else exo.currentPosition.coerceAtLeast(0L)
-        val maxTarget = if (dur > 0L) (dur - 1000L).coerceAtLeast(0L) else Long.MAX_VALUE
-        pendingSeekTargetMs = (basePos + deltaMs).coerceIn(0L, maxTarget)
+        pendingSeekTargetMs = computeSeekTargetMs(basePos, deltaMs, dur)
         commitPendingSeek()
     }
 
@@ -684,6 +946,21 @@ class PlayerActivity : AppCompatActivity() {
         if (target < 0L) return
 
         val exo = player ?: return
+        if (!exo.isCurrentMediaItemSeekable) {
+            isAwaitingSeekReady = false
+            expectedSeekPosMs = -1L
+            if (!tryFallbackToTranscoded(target)) {
+                Toast.makeText(
+                    this,
+                    "Seek unavailable on this stream — try 1080p/720p in Settings",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+            updateTimeUi()
+            scheduleControlsAutoHide()
+            return
+        }
+
         expectedSeekPosMs = target
         isAwaitingSeekReady = true
         seekAwaitDeadlineMs = System.currentTimeMillis() + 5_000L
@@ -692,7 +969,7 @@ class PlayerActivity : AppCompatActivity() {
         val dur = effectiveDurationMs()
         binding.pauseTimeDisplay.text = "${formatTime(target)} / ${formatTime(dur)}"
         if (dur > 0L) {
-            binding.pauseSeekBar.progress = ((target * 1000L) / dur).toInt().coerceIn(0, 1000)
+            binding.pauseSeekBar.progress = computeProgressPermille(target, dur)
         }
         scheduleControlsAutoHide()
     }
@@ -711,7 +988,7 @@ class PlayerActivity : AppCompatActivity() {
         val dur = effectiveDurationMs()
         binding.pauseTimeDisplay.text = "${formatTime(pos)} / ${formatTime(dur)}"
         if (dur > 0L) {
-            binding.pauseSeekBar.progress = ((pos * 1000L) / dur).toInt().coerceIn(0, 1000)
+            binding.pauseSeekBar.progress = computeProgressPermille(pos, dur)
         }
     }
 
@@ -720,7 +997,7 @@ class PlayerActivity : AppCompatActivity() {
         val exo = player ?: return
         if (isScrubbing || pendingSeekTargetMs >= 0L || isAwaitingSeekReady) return
         val pos = if (forceEnded) 0L else exo.currentPosition.coerceAtLeast(0L)
-        val dur = exo.duration.coerceAtLeast(item.durationMs)
+        val dur = effectiveDurationMs().coerceAtLeast(item.durationMs)
         lifecycleScope.launch {
             repo.savePlaybackProgress(item.id, pos, dur)
         }
@@ -860,5 +1137,27 @@ class PlayerActivity : AppCompatActivity() {
         const val EXTRA_ITEM_ID = "extra_item_id"
         const val EXTRA_RESUME_MS = "extra_resume_ms"
         const val EXTRA_QUALITY = "extra_quality"
+        private const val ACTION_PIP_TOGGLE_PLAY = "com.pixelstreamer.ACTION_PIP_TOGGLE_PLAY"
+        private const val BUFFERING_WATCHDOG_MS = 12_000L
+
+        fun computeSeekTargetMs(basePosMs: Long, deltaMs: Long, durationMs: Long): Long {
+            val maxTarget = if (durationMs > 0L) (durationMs - 1000L).coerceAtLeast(0L) else Long.MAX_VALUE
+            return (basePosMs.coerceAtLeast(0L) + deltaMs).coerceIn(0L, maxTarget)
+        }
+
+        fun computeProgressPermille(positionMs: Long, durationMs: Long): Int {
+            if (durationMs <= 0L) return 0
+            return ((positionMs.coerceAtLeast(0L) * 1000L) / durationMs).toInt().coerceIn(0, 1000)
+        }
+
+        fun computeSafePipAspectRatio(width: Int, height: Int): Pair<Int, Int> {
+            if (width <= 0 || height <= 0) return 16 to 9
+            val ratio = width.toFloat() / height.toFloat()
+            return when {
+                ratio > 2.35f -> 235 to 100
+                ratio < 0.45f -> 45 to 100
+                else -> width to height
+            }
+        }
     }
 }

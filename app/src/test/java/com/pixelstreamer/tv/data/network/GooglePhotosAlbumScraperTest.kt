@@ -152,4 +152,29 @@ class GooglePhotosAlbumScraperTest {
         assertEquals(listOf(22, 18), merged.availableItags)
         assertEquals(5_400_000L, merged.durationMs)
     }
+
+    @Test
+    fun buildCandidateUrls_forAutoPrioritizesFaststartItagsBeforeOriginal() {
+        val movie = com.pixelstreamer.tv.data.model.MediaItem(
+            id = "m1080",
+            albumId = "a1",
+            albumShareId = "s1",
+            albumKey = "k1",
+            baseUrl = "https://lh3.googleusercontent.com/pw/XYZ",
+            width = 1920,
+            height = 1080,
+            timestampMs = 0L,
+            isVideo = true
+        )
+        val candidates = scraper.buildCandidateUrls(
+            item = movie,
+            available = listOf(37, 22, 18),
+            signedUrls = mapOf(37 to "https://video-downloads.googleusercontent.com/signed37"),
+            preferred = com.pixelstreamer.tv.data.model.VideoQuality.AUTO
+        )
+        assertEquals("https://video-downloads.googleusercontent.com/signed37", candidates[0])
+        assertEquals("https://lh3.googleusercontent.com/pw/XYZ=m37", candidates[1])
+        assertEquals("https://lh3.googleusercontent.com/pw/XYZ=m22", candidates[2])
+        assertEquals("https://lh3.googleusercontent.com/pw/XYZ=dv", candidates[3])
+    }
 }

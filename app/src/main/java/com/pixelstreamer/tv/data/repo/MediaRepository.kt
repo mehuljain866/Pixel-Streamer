@@ -3,6 +3,7 @@ package com.pixelstreamer.tv.data.repo
 import android.content.Context
 import com.pixelstreamer.tv.data.model.AlbumSource
 import com.pixelstreamer.tv.data.model.AlbumType
+import com.pixelstreamer.tv.data.model.HeroSlide
 import com.pixelstreamer.tv.data.model.HomeRow
 import com.pixelstreamer.tv.data.model.MediaItem
 import com.pixelstreamer.tv.data.model.MovieMetadata
@@ -731,12 +732,37 @@ class MediaRepository(
         return rows
     }
 
-    suspend fun resolveFreshPlaybackUrl(item: MediaItem, quality: VideoQuality): String {
+    fun buildHeroSlides(
+        randomSeed: Long = System.currentTimeMillis(),
+        maxSlides: Int = 6
+    ): List<HeroSlide> {
+        val visibleVideos = getVisibleItems().filter { it.isVideo }
+        val shows = buildShows()
+        val slides = buildHeroSlides(
+            allVideos = visibleVideos,
+            shows = shows,
+            progressMap = _progressMap.value,
+            randomSeed = randomSeed,
+            maxSlides = maxSlides
+        )
+        if (slides.isNotEmpty()) return slides
+        val firstPhoto = getPhotoItems().firstOrNull() ?: return emptyList()
+        return listOf(HeroSlide(id = "item_${firstPhoto.id}", item = firstPhoto, isContinueWatching = false))
+    }
+
+    suspend fun resolveFreshStreamInfo(
+        item: MediaItem,
+        quality: VideoQuality
+    ): com.pixelstreamer.tv.data.network.ResolvedStreamInfo {
         val indexer = preIndexer
         if (indexer != null) {
-            return indexer.getOrResolveStreamInfo(item, quality, scraper).url
+            return indexer.getOrResolveStreamInfo(item, quality, scraper)
         }
-        return scraper.resolveFreshStreamUrl(item, quality)
+        return scraper.resolveFreshStreamInfo(item, quality)
+    }
+
+    suspend fun resolveFreshPlaybackUrl(item: MediaItem, quality: VideoQuality): String {
+        return resolveFreshStreamInfo(item, quality).url
     }
 
     /**
@@ -1006,6 +1032,67 @@ class MediaRepository(
         private const val KEY_TMDB_API_KEY = "tmdb_api_key"
         private const val KEY_DEFAULT_QUALITY = "default_quality"
         private const val KEY_SLIDESHOW_SEC = "slideshow_seconds"
+
+        fun buildHeroSlides(
+            allVideos: List<MediaItem>,
+            shows: List<ShowGroup>,
+            progressMap: Map<String, PlaybackProgress>,
+            randomSeed: Long = 0L,
+            maxSlides: Int = 6
+        ): List<HeroSlide> {
+            val slides = mutableListOf<HeroSlide>()
+            val usedItemIds = mutableSetOf<String>()
+            val usedSeriesKeys = mutableSetOf<String>()
+            val showsByKey = shows.associateBy { it.seriesKey }
+
+            val inProgress = allVideos
+                .filter { progressMap[it.id]?.isInProgress == true }
+                .sortedByDescending { progressMap[it.id]?.updatedAt ?: 0L }
+
+            for (video in inProgress) {
+                if (slides.size >= 2 || slides.size >= maxSlides) break
+                if (video.isEpisode) {
+                    val key = TitleCleaner.normalizeSeriesKey(video.seriesDisplayTitle)
+                    if (!usedSeriesKeys.add(key)) continue
+                    slides.add(
+                        HeroSlide(
+                            id = "cw_${video.id}",
+                            item = video,
+                            show = showsByKey[key],
+                            isContinueWatching = true
+                        )
+                    )
+                } else if (usedItemIds.add(video.id)) {
+                    slides.add(
+                        HeroSlide(
+                            id = "cw_${video.id}",
+                            item = video,
+                            isContinueWatching = true
+                        )
+                    )
+                }
+            }
+
+            if (slides.size < maxSlides) {
+                val recPool = mutableListOf<HeroSlide>()
+                for (show in shows) {
+                    if (show.seriesKey !in usedSeriesKeys) {
+                        recPool.add(HeroSlide(id = "show_${show.seriesKey}", show = show))
+                    }
+                }
+                for (movie in allVideos) {
+                    if (!movie.isEpisode && movie.id !in usedItemIds) {
+                        recPool.add(HeroSlide(id = "item_${movie.id}", item = movie))
+                    }
+                }
+                val shuffled = recPool.shuffled(kotlin.random.Random(randomSeed))
+                for (candidate in shuffled) {
+                    if (slides.size >= maxSlides) break
+                    slides.add(candidate)
+                }
+            }
+            return slides
+        }
 
         fun applyVisibilityUpdates(
             items: List<MediaItem>,

@@ -55,6 +55,6 @@ class StreamPreIndexerTest {
         val q720Key = StreamPreIndexer.cacheKeyFor(item, VideoQuality.Q720P)
         assertEquals(autoKey1, autoKey2)
         assertNotEquals(autoKey1, q720Key)
-        assertTrue(autoKey1.startsWith("ps_vid1_AUTO_"))
+        assertTrue(autoKey1.startsWith("ps2_vid1_AUTO_"))
     }
 }

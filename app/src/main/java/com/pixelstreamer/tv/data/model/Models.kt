@@ -228,6 +228,13 @@ data class HomeRow(
     val shows: List<ShowGroup> = emptyList()
 )
 
+data class HeroSlide(
+    val id: String,
+    val item: MediaItem? = null,
+    val show: ShowGroup? = null,
+    val isContinueWatching: Boolean = false
+)
+
 enum class RowStyle {
     CONTINUE_WATCHING,
     SHOWS_POSTER,
